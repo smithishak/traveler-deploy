@@ -1,0 +1,5 @@
+# bash-скрипт и конфиги должны иметь LF-переводы строк (иначе bash ругнётся на сервере)
+*.sh        text eol=lf
+Caddyfile   text eol=lf
+*.yml       text eol=lf
+.env.example text eol=lf

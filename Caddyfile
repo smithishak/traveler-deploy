@@ -1,0 +1,16 @@
+# Caddy: HTTPS для веб-панели wg-easy с самоподписанным сертификатом.
+# {$SERVER_IP} подставляется из переменной окружения (см. docker-compose.yml).
+#
+# Почему default_sni: при доступе по IP браузер не отправляет TLS SNI
+# (по стандарту SNI не может быть IP), и без этой строки Caddy отвечает
+# "TLS internal error". Если используешь ДОМЕН — можно убрать default_sni
+# и заменить tls internal на автоматический Let's Encrypt.
+{
+	auto_https disable_redirects
+	default_sni {$SERVER_IP}
+}
+
+https://{$SERVER_IP} {
+	tls internal
+	reverse_proxy wg-easy:51821
+}
