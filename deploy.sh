@@ -9,7 +9,8 @@
 #     WG_ADMIN_USERNAME=admin      # логин в панель (по умолчанию admin)
 #     WG_ADMIN_PASSWORD=...        # пароль панели (по умолчанию генерируется)
 #     WG_DNS=1.1.1.1,8.8.8.8       # DNS для клиентов
-#     WG_PORT=51820                # UDP-порт WireGuard/AmneziaWG
+#     WG_PORT=443                  # UDP-порт WireGuard/AmneziaWG (443 = маскировка под QUIC/HTTP3)
+#     WG_MTU=1280                  # MTU клиентов (1280 — устойчиво к DPI/мобильным сетям)
 #
 set -euo pipefail
 
@@ -18,7 +19,8 @@ SERVER_IP="${SERVER_IP:-}"
 WG_ADMIN_USERNAME="${WG_ADMIN_USERNAME:-admin}"
 WG_ADMIN_PASSWORD="${WG_ADMIN_PASSWORD:-}"
 WG_DNS="${WG_DNS:-1.1.1.1,8.8.8.8}"
-WG_PORT="${WG_PORT:-51820}"
+WG_PORT="${WG_PORT:-443}"        # 443/udp маскируется под QUIC — DPI его почти не трогает
+WG_MTU="${WG_MTU:-1280}"         # пониженный MTU: AmneziaWG раздувает пакеты, 1280 надёжнее
 GENERATED_PW=0
 
 log()  { echo -e "\n\033[1;32m>>> $*\033[0m"; }
@@ -106,6 +108,44 @@ else
   OBF="НЕ активна ❌ (проверь модуль/логи: docker logs wg-easy)"
 fi
 
+# ---------- 8. фиксы стабильности: MTU 1280 + MSS-клампинг ----------
+# Зачем: AmneziaWG добавляет к пакетам «мусор» и меняет заголовки, из-за чего
+# крупные TCP-пакеты на мобильных сетях/DPI молча режутся ("подключается, а
+# интернет не работает / медленно"). MSS-клампинг гарантированно укладывает TCP
+# в путь, MTU 1280 страхует остальное. MSS-правило кладём в hooks_table (PostUp),
+# чтобы оно переживало рестарт контейнера, и добавляем вживую для текущей сессии.
+log "Применяю фиксы стабильности (MTU $WG_MTU + MSS-клампинг)..."
+DB=/var/lib/docker/volumes/etc_wireguard/_data/wg-easy.db
+command -v sqlite3 >/dev/null 2>&1 || apt-get install -y -qq sqlite3 >/dev/null
+# дождаться, пока INIT создаст таблицы в БД
+for i in $(seq 1 30); do
+  if [ -f "$DB" ] && sqlite3 "$DB" "select 1 from user_configs_table limit 1;" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+MSS4=$(( WG_MTU - 40 ))   # IPv4: MTU - 20 (IP) - 20 (TCP)
+MSS6=$(( WG_MTU - 60 ))   # IPv6: MTU - 40 (IP) - 20 (TCP)
+if [ -f "$DB" ]; then
+  # MTU по умолчанию (новые конфиги) и всем существующим клиентам
+  sqlite3 "$DB" "UPDATE user_configs_table SET default_mtu=$WG_MTU;" 2>/dev/null || true
+  sqlite3 "$DB" "UPDATE clients_table SET mtu=$WG_MTU;" 2>/dev/null || true
+  # MSS-клампинг в hooks (идемпотентно — только если ещё не добавлен)
+  if ! sqlite3 "$DB" "select post_up from hooks_table where id='wg0';" 2>/dev/null | grep -q TCPMSS; then
+    sqlite3 "$DB" "UPDATE hooks_table SET \
+      post_up   = post_up   || ' iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS4; ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS6;', \
+      post_down = post_down || ' iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS4; ip6tables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS6;' \
+      WHERE id='wg0';" 2>/dev/null || true
+  fi
+else
+  warn "БД ещё не создана — пропускаю MTU/MSS (примени позже вручную)."
+fi
+# добавить MSS-правило вживую (без рестарта), чтобы заработало прямо сейчас
+docker exec wg-easy sh -c "
+  iptables  -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS4 2>/dev/null || iptables  -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS4
+  ip6tables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS6 2>/dev/null || ip6tables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss $MSS6
+" 2>/dev/null || true
+
 # ---------- итог ----------
 cat <<EOF
 
@@ -125,7 +165,8 @@ fi
 cat <<EOF
 
   Обфускация AmneziaWG: $OBF
-  WireGuard порт:       $WG_PORT/udp
+  WireGuard порт:       $WG_PORT/udp (маскировка под QUIC)
+  MTU клиентов:         $WG_MTU  +  MSS-клампинг (TCP $MSS4 / $MSS6)
   DNS клиентам:         $WG_DNS
 
   ВАЖНО — клиенты ставят приложение AmneziaWG (НЕ обычный
