@@ -39,6 +39,12 @@ fi
 [ -n "$SERVER_IP" ] || die "Не удалось определить IP. Запусти: SERVER_IP=твой.ip ./deploy.sh"
 log "IP сервера: $SERVER_IP"
 
+# IP сетевого интерфейса — нужен, чтобы привязать запасной порт 53/udp именно к нему,
+# а не к 0.0.0.0 (иначе конфликт с systemd-resolved, который слушает 53 на 127.0.0.53).
+# Работает и за NAT: входящий трафик после DNAT приходит на адрес интерфейса.
+BIND_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+[ -n "$BIND_IP" ] || BIND_IP="$SERVER_IP"
+
 # ---------- пароль администратора ----------
 if [ -z "$WG_ADMIN_PASSWORD" ]; then
   WG_ADMIN_PASSWORD="$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
@@ -80,6 +86,7 @@ lsmod | grep -q '^amneziawg' || die "Модуль amneziawg не загрузи�
 log "Генерирую .env..."
 cat > .env <<EOF
 SERVER_IP=$SERVER_IP
+BIND_IP=$BIND_IP
 INIT_USERNAME=$WG_ADMIN_USERNAME
 INIT_PASSWORD=$WG_ADMIN_PASSWORD
 INIT_DNS=$WG_DNS
@@ -165,7 +172,8 @@ fi
 cat <<EOF
 
   Обфускация AmneziaWG: $OBF
-  WireGuard порт:       $WG_PORT/udp (маскировка под QUIC)
+  WireGuard порты:      $WG_PORT (осн.), 4500, 53 /udp — все ведут в один VPN
+                        (на сети, режущей один порт, смени порт в Endpoint=)
   MTU клиентов:         $WG_MTU  +  MSS-клампинг (TCP $MSS4 / $MSS6)
   DNS клиентам:         $WG_DNS
 
