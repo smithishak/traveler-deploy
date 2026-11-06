@@ -12,5 +12,5 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: bash -n deploy.sh setup-host.sh
-      - run: python -m py_compile traveler.py tests/integration.py
+      - run: python -m py_compile traveler.py tcp_fallback.py tests/integration.py tests/tcp_integration.py tests/external_tcp.py
       - run: python -m unittest discover -s tests -p 'test_*.py' -v

@@ -22,6 +22,13 @@ IMAGES = STATE / 'images.json'
 PENDING = STATE / 'pending.json'
 SERVICES = ('wg-easy', 'caddy')
 FILES = ('.env', 'docker-compose.yml', 'Caddyfile')
+TCP_COMPOSE = STATE / 'tcp-compose.json'
+OPTIONAL_FILES = ('.traveler/tcp-compose.json', '.traveler/tcp/server.json',
+                  '.traveler/tcp/Caddyfile')
+
+
+def active_services():
+    return SERVICES + (('tcp-fallback',) if TCP_COMPOSE.exists() else ())
 
 
 class Failure(RuntimeError):
@@ -67,6 +74,8 @@ def digest(path):
 def compose(*args, base=False, check=True, timeout=180):
     command = ['docker', 'compose', '--project-directory', str(ROOT),
                '-f', str(ROOT / 'docker-compose.yml')]
+    if TCP_COMPOSE.exists():
+        command += ['-f', str(TCP_COMPOSE)]
     if IMAGES.exists() and not base:
         command += ['-f', str(IMAGES)]
     environment = os.environ.copy()
@@ -113,7 +122,7 @@ def env_values():
 
 def check_core():
     host, port = env_values()
-    for service in SERVICES:
+    for service in active_services():
         item = info(service)
         if not item or not item['State']['Running']:
             raise Failure(f'{service}: контейнер не запущен.')
@@ -143,6 +152,9 @@ def check_core():
                    '-w', '%{http_code}', f'https://{host}/login').stdout
     if response != '200':
         raise Failure(f'HTTPS /login: HTTP {response}.')
+    if TCP_COMPOSE.exists():
+        import tcp_fallback
+        tcp_fallback.check_server()
 
 
 def wait_ready(seconds):
@@ -179,6 +191,8 @@ def doctor():
     test('Модуль ядра AmneziaWG', lambda: require(Path('/sys/module/amneziawg').exists(),
                                                'Модуль не загружен; проверьте DKMS/modprobe.'))
     test('Контейнеры, wg0, UDP-порты, NAT, forwarding, HTTPS', check_core)
+    if TCP_COMPOSE.exists():
+        print('INFO TCP/443: включён; TLS, WebSocket и авторизованный запрос проверены выше.')
 
     def database():
         with sqlite3.connect(f'file:{volume() / "wg-easy.db"}?mode=ro', uri=True) as db:
@@ -265,7 +279,7 @@ def install():
 def pinned_images():
     images = {}
     release = uuid.uuid4().hex
-    for service in SERVICES:
+    for service in active_services():
         item = info(service)
         require(item is not None, f'Не найден контейнер {service}.')
         tag = f'traveler-local/{service}:{release}'
@@ -277,12 +291,14 @@ def pinned_images():
 def snapshot():
     target = STATE / 'backups' / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
     target.mkdir(parents=True, mode=0o700)
-    for name in FILES:
+    files = FILES + tuple(name for name in OPTIONAL_FILES if (ROOT / name).exists())
+    for name in files:
+        (target / name).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         shutil.copy2(ROOT / name, target / name)
         (target / name).chmod(0o600)
     atomic_json(target / 'images.json', pinned_images())
     volumes = {'etc_wireguard': volume()}
-    for service in SERVICES:
+    for service in active_services():
         for mount in info(service)['Mounts']:
             if mount['Type'] == 'volume':
                 volumes[mount['Name']] = volume(mount['Name'])
@@ -295,7 +311,7 @@ def snapshot():
     try:
         compose('stop')
         manifest = {'volumes': {}, 'files': {
-            name: digest(target / name) for name in (*FILES, 'images.json')}}
+            name: digest(target / name) for name in (*files, 'images.json')}}
         for index, (name, data) in enumerate(volumes.items()):
             archive_path = target / f'volume-{index}.tar'
             with tarfile.open(archive_path, 'w') as archive:
@@ -305,7 +321,7 @@ def snapshot():
             manifest['volumes'][name] = {
                 'path': str(data), 'archive': archive_path.name,
                 'sha256': digest(archive_path)}
-        for name in FILES:
+        for name in files:
             with (target / name).open('rb') as source:
                 os.fsync(source.fileno())
         atomic_json(target / 'manifest.json', manifest)
@@ -323,6 +339,9 @@ def restore(target, timeout):
     for name in (*FILES, 'images.json'):
         require(digest(target / name) == manifest['files'][name],
                 f'Контрольная сумма файла {name} не совпадает.')
+    for name in manifest['files']:
+        require(name in (*FILES, *OPTIONAL_FILES, 'images.json'), 'Неизвестный файл в бэкапе.')
+        require(digest(target / name) == manifest['files'][name], 'Повреждён файл бэкапа.')
     archives = []
     for name, saved in manifest['volumes'].items():
         archive_path = target / saved['archive']
@@ -352,10 +371,16 @@ def restore(target, timeout):
                 child.unlink()
         with tarfile.open(archive_path) as archive:
             archive.extractall(data)  # members validated above; Python 3.10 compatible.
-    for name in FILES:
+    for name in OPTIONAL_FILES:
+        if name not in manifest['files']:
+            (ROOT / name).unlink(missing_ok=True)
+    for name in manifest['files']:
+        if name == 'images.json':
+            continue
+        (ROOT / name).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         shutil.copy2(target / name, ROOT / name)
     atomic_json(IMAGES, saved_images)
-    compose('up', '-d', '--force-recreate', '--pull', 'never', timeout=180)
+    compose('up', '-d', '--force-recreate', '--remove-orphans', '--pull', 'never', timeout=180)
     wait_ready(timeout)
     PENDING.unlink(missing_ok=True)
     print('Откат завершён: восстановлены данные, настройки и предыдущие образы.')
@@ -363,10 +388,13 @@ def restore(target, timeout):
 
 def update(args):
     require(not PENDING.exists(), 'Есть незавершённое обновление. Выполните ./deploy.sh rollback.')
+    require(not args.tcp_image or TCP_COMPOSE.exists(), 'Перед --tcp-image включите tcp-enable.')
     wait_ready(30)
     candidates = config(base=True)['services']
     selected = {'wg-easy': args.wg_image or candidates['wg-easy']['image'],
                 'caddy': args.caddy_image or candidates['caddy']['image']}
+    if TCP_COMPOSE.exists():
+        selected['tcp-fallback'] = args.tcp_image or candidates['tcp-fallback']['image']
     # Download before downtime; failure here leaves running containers intact.
     release = uuid.uuid4().hex
     new_images = {'services': {}}
@@ -394,10 +422,13 @@ def update(args):
 def main():
     parser = argparse.ArgumentParser(description='Traveler: install, doctor, update, rollback, backup')
     parser.add_argument('command', nargs='?', default='install',
-                        choices=('install', 'doctor', 'update', 'rollback', 'backup'))
+                        choices=('install', 'doctor', 'update', 'rollback', 'backup',
+                                 'tcp-enable', 'tcp-export'))
     parser.add_argument('backup_id', nargs='?')
     parser.add_argument('--wg-image', help='Образ wg-easy для update')
     parser.add_argument('--caddy-image', help='Образ Caddy для update')
+    parser.add_argument('--tcp-image', help='Образ sing-box для update/tcp-enable')
+    parser.add_argument('--mode', choices=('tun', 'proxy'), default='tun', help='Режим tcp-export')
     parser.add_argument('--timeout', type=int, default=90, help='Ожидание новой версии, 10..600 секунд')
     args = parser.parse_args()
     require(os.geteuid() == 0, 'Запустите под root.')
@@ -419,6 +450,12 @@ def main():
             return doctor()
         if args.command == 'update':
             update(args)
+        elif args.command == 'tcp-enable':
+            import tcp_fallback
+            tcp_fallback.enable(args)
+        elif args.command == 'tcp-export':
+            import tcp_fallback
+            tcp_fallback.export(args.mode)
         elif args.command == 'backup':
             snapshot()
         elif args.command == 'rollback':
@@ -442,6 +479,7 @@ def main():
 
 
 if __name__ == '__main__':
+    sys.modules.setdefault('traveler', sys.modules[__name__])
     try:
         sys.exit(main())
     except (Failure, ValueError, KeyError, sqlite3.Error, OSError,
