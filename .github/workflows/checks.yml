@@ -1,0 +1,16 @@
+name: checks
+on: [push, pull_request]
+jobs:
+  manager:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: bash -n deploy.sh setup-host.sh
+      - run: python -m py_compile traveler.py tests/integration.py
+      - run: python -m unittest discover -s tests -p 'test_*.py' -v
