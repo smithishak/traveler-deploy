@@ -1,0 +1,15 @@
+[Unit]
+Description=Traveler private sing-box origin
+After=network.target
+
+[Service]
+User=traveler-origin
+ExecStart=/usr/local/bin/traveler-sing-box run -c /etc/traveler-origin/config.json
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

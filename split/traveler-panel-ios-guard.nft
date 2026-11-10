@@ -1,0 +1,8 @@
+add table inet traveler_panel_ios
+delete table inet traveler_panel_ios
+table inet traveler_panel_ios {
+    chain output {
+        type filter hook output priority filter; policy accept;
+        ip daddr 127.0.0.1 tcp dport 18765 meta skuid != { "traveler-panel-ios", "traveler-panel-access" } reject with tcp reset
+    }
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Loopback listener for the Traveler iPhone SSH tunnel
+BindsTo=traveler-panel-ios-guard.service
+After=traveler-panel-ios-guard.service
+
+[Socket]
+ListenStream=127.0.0.1:18765
+
+[Install]
+WantedBy=sockets.target

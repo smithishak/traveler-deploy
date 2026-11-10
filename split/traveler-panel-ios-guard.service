@@ -1,0 +1,8 @@
+[Unit]
+Description=Limit the Traveler panel bridge to its SSH accounts
+Before=traveler-panel-ios.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/traveler-panel/ios-guard.nft

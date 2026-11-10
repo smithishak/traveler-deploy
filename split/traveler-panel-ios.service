@@ -1,0 +1,13 @@
+[Unit]
+Description=Forward the Traveler iPhone SSH tunnel to the private panel
+Requires=traveler-panel.service
+After=traveler-panel.service
+
+[Service]
+User=traveler-panel-access
+Group=traveler-panel-access
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd /run/traveler-panel/panel.sock
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

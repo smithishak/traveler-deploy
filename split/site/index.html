@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f0e8">
+  <meta name="description" content="Два портрета, один выбор. Небольшая киноклубная игра, в которой складывается ваш личный рейтинг актрис.">
+  <title>Кинолица — ваш кадр, ваш выбор</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="catalog.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#choice" aria-label="Кинолица — на главную"><span class="brand-icon" aria-hidden="true">к<span>л</span></span><span>кинолица<span class="brand-dot">.</span></span></a>
+    <nav aria-label="Главное меню"><a href="#choice">Выбирать</a><a href="#rating">Ваш рейтинг <span id="nav-count">0</span></a><a href="#about">О проекте</a></nav>
+    <span class="header-tag"><i></i> Маленький киноклуб</span>
+  </header>
+
+  <main>
+    <section id="choice" class="choice-section" aria-labelledby="main-title">
+      <div class="intro">
+        <div><p class="eyebrow"><span class="tiny-star">✳</span> ЛИЦА БОЛЬШОГО КИНО · ВЫПУСК 01</p><h1 id="main-title">Ваш кадр.<br><em>Ваш выбор.</em></h1></div>
+        <div class="intro-aside"><p>Кто вам кажется красивее? <br>Выберите портрет, чтобы открыть следующую пару.</p><span class="local-label"><span aria-hidden="true">◉</span> Рейтинг сохраняется на этом устройстве</span></div>
+      </div>
+
+      <div class="match-heading"><p>СРАВНЕНИЕ <span id="round-number">01</span></p><p>КРАСОТА ГЛАЗАМИ ЗРИТЕЛЯ</p><span id="vote-counter">Ваших выборов: 0</span></div>
+      <div class="duel" id="duel" aria-label="Выберите понравившийся портрет">
+        <button class="portrait-card" id="card-left" type="button" aria-label="Выбрать левый портрет">
+          <img id="image-left" alt="" width="900" height="1200" fetchpriority="high">
+          <span class="portrait-shade"></span><span class="key-label" aria-hidden="true">01</span><span class="winner-mark" aria-hidden="true">✦ ВАШ ВЫБОР</span>
+          <span class="portrait-info"><span class="portrait-context" id="context-left"></span><span class="portrait-name" id="name-left"></span><span class="portrait-action">Выбрать <span aria-hidden="true">↗</span></span></span>
+        </button>
+        <span class="versus" aria-hidden="true">или</span>
+        <button class="portrait-card" id="card-right" type="button" aria-label="Выбрать правый портрет">
+          <img id="image-right" alt="" width="900" height="1200" fetchpriority="high">
+          <span class="portrait-shade"></span><span class="key-label" aria-hidden="true">02</span><span class="winner-mark" aria-hidden="true">✦ ВАШ ВЫБОР</span>
+          <span class="portrait-info"><span class="portrait-context" id="context-right"></span><span class="portrait-name" id="name-right"></span><span class="portrait-action">Выбрать <span aria-hidden="true">↗</span></span></span>
+        </button>
+      </div>
+      <div class="match-controls"><button class="text-button" id="undo" type="button" disabled><span aria-hidden="true">↶</span> Отменить выбор</button><button class="skip-button" id="skip" type="button">Другая пара <span aria-hidden="true">↗</span></button><span class="keyboard-hint">С клавиатуры: <kbd>←</kbd> <kbd>→</kbd></span></div>
+      <p class="live-status" id="live-status" role="status" aria-live="polite">Выбирайте сердцем. Здесь нет правильного ответа.</p>
+      <p class="storage-warning" id="storage-warning" hidden></p>
+    </section>
+
+    <section class="rating-section" id="rating" aria-labelledby="rating-title">
+      <div class="section-heading"><div><p class="eyebrow">У КАЖДОГО — СВОЯ КЛАССИКА</p><h2 id="rating-title">Ваш личный рейтинг<span class="brand-dot">.</span></h2></div><span class="rating-counter"><strong id="total-votes">0</strong> <span>сравнений<br>на этом устройстве</span></span></div>
+      <div class="rating-table"><div class="table-heading"><span>МЕСТО / АКТРИСА</span><span>ПОБЕДЫ</span><span>ELO <button class="info-button" id="elo-info" type="button" aria-label="Как считается рейтинг Elo">?</button></span></div><ol id="ranking" aria-label="Ваш рейтинг актрис"></ol></div>
+      <div class="rating-footnote"><p>Рейтинг отражает только ваши выборы. У всех участниц на старте 1000 баллов Elo.</p><button class="text-button" id="reset" type="button">Начать заново <span aria-hidden="true">↗</span></button></div>
+    </section>
+
+    <section class="about-section" id="about" aria-labelledby="about-title"><div class="about-mark" aria-hidden="true">✳</div><div><p class="eyebrow">НЕБОЛЬШАЯ ИГРА О БОЛЬШОМ КИНО</p><h2 id="about-title">Вкус — это история<br>ваших выборов.</h2><p>Знакомые лица, разные образы и восемь актрис, которых интересно рассматривать. Каждая новая пара немного меняет ваш рейтинг. Можно пропускать, передумывать и начинать сначала.</p><p class="about-small">Без регистрации. Голоса хранятся в браузере этого устройства и не отправляются на сервер. Все участницы совершеннолетние; фотографии сняты на публичных мероприятиях во взрослом возрасте.</p></div><a href="#choice" class="about-link">Ещё одну пару <span aria-hidden="true">↗</span></a></section>
+  </main>
+
+  <footer class="site-footer"><a class="footer-brand" href="#choice">кинолица.</a><p>Субъективно. С любовью к кино.</p><button class="text-button" id="credits-open" type="button">Фотографии и лицензии ↗</button></footer>
+
+  <dialog id="info-dialog" aria-labelledby="dialog-title"><button class="dialog-close" type="button" aria-label="Закрыть">×</button><p class="eyebrow">НЕМНОГО МАТЕМАТИКИ</p><h2 id="dialog-title">Что такое Elo?</h2><p>Все начинают с 1000 баллов. После выбора баллы победительницы растут, а у второй участницы уменьшаются. Победа над участницей с высоким рейтингом приносит больше баллов.</p><p>Мы используем коэффициент K = 32. Это игровая шкала вашего вкуса; оценка меняется с каждым выбором. Общего рейтинга всех посетителей здесь нет.</p><button class="solid-button dialog-dismiss" type="button">Понятно</button></dialog>
+  <dialog id="reset-dialog" aria-labelledby="reset-title"><button class="dialog-close" type="button" aria-label="Закрыть">×</button><p class="eyebrow">С ЧИСТОГО КАДРА</p><h2 id="reset-title">Начнём заново?</h2><p>Все ваши выборы на этом устройстве будут удалены. Каждая участница снова получит 1000 баллов.</p><div class="dialog-actions"><button class="text-button dialog-dismiss" type="button">Оставить рейтинг</button><button class="solid-button" id="reset-confirm" type="button">Сбросить рейтинг</button></div></dialog>
+  <dialog id="credits-dialog" class="credits-dialog" aria-labelledby="credits-title"><button class="dialog-close" type="button" aria-label="Закрыть">×</button><p class="eyebrow">СПАСИБО АВТОРАМ</p><h2 id="credits-title">Лица и фотографии</h2><p>Фотографии с Wikimedia Commons. Для карточек используется визуальное кадрирование. Права на снимки принадлежат указанным авторам; их лицензии сохранены. Участницы и фотографы не связаны с этим проектом.</p><div id="credits-list"></div><button class="solid-button dialog-dismiss" type="button">Закрыть</button></dialog>
+  <noscript><div class="noscript">Для голосования нужен JavaScript. Включите его в настройках браузера.</div></noscript>
+</body>
+</html>
