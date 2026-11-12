@@ -288,16 +288,18 @@ dialog p { overflow-wrap: anywhere; }
 }
 
 .cover-title {
+  --cover-title-tilt: -7deg;
   position: absolute;
   top: 23%;
   left: 5%;
   color: var(--ink);
   text-shadow: 2px 2px #fff4df, 4px 4px #fff4df;
-  transform: rotate(-7deg) skewX(-8deg);
+  transform: rotate(var(--cover-title-tilt)) skewX(-8deg);
   font-size: clamp(53px, 17vw, 210px);
   font-weight: 1000;
   letter-spacing: -.11em;
   line-height: .8;
+  white-space: nowrap;
 }
 
 .cover-hero {
@@ -337,7 +339,7 @@ dialog p { overflow-wrap: anywhere; }
   100% { transform: translateY(115%) scale(1.1); }
 }
 @keyframes title-up {
-  0%, 25% { transform: rotate(-7deg) skewX(-8deg); opacity: 1; }
+  0%, 25% { transform: rotate(var(--cover-title-tilt)) skewX(-8deg); opacity: 1; }
   85%, 100% { transform: translateY(-140px) rotate(-11deg) skewX(-8deg); opacity: 0; }
 }
 
@@ -349,8 +351,29 @@ dialog p { overflow-wrap: anywhere; }
   .device { grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
   .device-content { padding-right: 8px; }
   .device .button { padding-inline: 8px; font-size: 13px; }
-  .cover-title { top: 25%; }
-  .cover-hero { right: -35%; bottom: -26%; width: 151%; height: 120%; }
+}
+
+@media (max-width: 600px) and (orientation: portrait) {
+  .cover-title {
+    --cover-title-tilt: -4deg;
+    top: max(8%, calc(env(safe-area-inset-top) + 22px));
+    left: 5%;
+    font-size: 20.5vw;
+    letter-spacing: -.095em;
+  }
+
+  .cover-hero {
+    left: 59%;
+    right: auto;
+    bottom: -42%;
+    width: max(150%, 85svh);
+    height: 122%;
+    translate: -50% 0;
+  }
+}
+
+@media (max-width: 600px) and (max-height: 650px) and (orientation: portrait) {
+  .cover-hero { bottom: -40%; height: 115%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -230,10 +230,10 @@ async function request(path, options = {}) {
   return result.state ?? result;
 }
 
-function showCover() {
+function showCover(focus = false) {
   panel.inert = true;
   cover.hidden = false;
-  byId('open').focus({ preventScroll: true });
+  if (focus) byId('open').focus({ preventScroll: true });
 }
 
 function finishCover() {
@@ -379,7 +379,7 @@ dialog.addEventListener('cancel', event => {
 });
 byId('replay').addEventListener('click', () => {
   dialog.close();
-  showCover();
+  showCover(true);
 });
 byId('open').addEventListener('click', () => {
   if (cover.classList.contains('cover-playing')) return;
