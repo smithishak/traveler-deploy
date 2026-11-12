@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Traveler</title>
+  <link rel="stylesheet" href="/panel-ui/style.css">
+  <script src="/panel-ui/app.js" defer></script>
+</head>
+<body>
+  <main class="panel" id="panel">
+    <header class="masthead">
+      <a class="wordmark" href="/" aria-label="Traveler, главная">TRAVELER</a>
+      <button type="button" id="settings" class="button button-quiet" hidden>Настройки</button>
+    </header>
+    <p id="loading" class="empty" role="status">Загружаем панель…</p>
+    <p id="error" class="alert" role="alert" hidden></p>
+    <button type="button" class="button" id="retry" hidden>Повторить</button>
+    <section id="screen" aria-labelledby="heading" hidden>
+      <button type="button" class="back" id="back" hidden>← К пользователям</button>
+      <div class="section-head">
+        <h1 id="heading" tabindex="-1">Пользователи</h1>
+        <button type="button" id="add" class="button button-primary">+ Пользователь</button>
+      </div>
+      <div id="entries" class="entries"></div>
+    </section>
+  </main>
+  <div class="cover" id="cover" hidden>
+    <div class="cover-print" aria-hidden="true"></div>
+    <span class="cover-title" aria-hidden="true">TRAVELER</span>
+    <img class="cover-hero" src="/panel-ui/hero.webp" alt="">
+    <button type="button" class="cover-open" id="open" aria-label="Открыть панель"></button>
+  </div>
+  <dialog id="dialog" aria-labelledby="dialog-title">
+    <form id="dialog-form">
+      <h2 id="dialog-title"></h2>
+      <p id="dialog-note" hidden></p>
+      <label class="field" id="name-field" hidden>
+        Название
+        <input type="text" id="name-input" maxlength="60" autocomplete="off">
+      </label>
+      <label class="field" id="kind-field" hidden>
+        Устройство
+        <select id="kind">
+          <option value="phone">Телефон</option>
+          <option value="laptop">Компьютер</option>
+          <option value="tablet">Планшет</option>
+          <option value="other">Другое</option>
+        </select>
+      </label>
+      <label class="checkbox" id="intro-field" hidden>
+        <input type="checkbox" id="intro"> Показывать заставку при входе
+      </label>
+      <p id="stats-health" role="status" hidden></p>
+      <button type="button" class="back" id="refresh-stats" hidden>Обновить статистику</button>
+      <button type="button" class="back" id="replay" hidden>Смотреть заставку ↗</button>
+      <p id="dialog-error" class="alert" role="alert" hidden></p>
+      <div class="actions dialog-actions">
+        <button type="button" id="cancel" class="button button-quiet">Отмена</button>
+        <button type="submit" id="submit" class="button button-primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

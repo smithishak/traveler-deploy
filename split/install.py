@@ -21,6 +21,14 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parent
 EDGE_CA = '/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt'
+PANEL_FILES = (
+    'configure.py', 'panel.py', 'panel_state.py', 'panel_traffic.py',
+    'build-traffic-sing-box.sh', 'traveler-panel.service', 'traveler-panel-traffic.service',
+    *(f'panel-ui/{name}' for name in (
+        'index.html', 'style.css', 'app.js', 'cover.webp', 'hero.webp',
+        'phone.webp', 'laptop.webp', 'tablet.webp',
+    )),
+)
 REMOTE_STAGE = (
     'set -eu; umask 077; stage=$(mktemp -d); '
     'trap \'rm -rf -- "$stage"\' EXIT; cd "$stage"; tar -xzf -; '
@@ -82,7 +90,9 @@ def bundle(files, generated, site=False):
     with tarfile.open(fileobj=payload, mode='w:gz') as archive:
         for name in files:
             path = SOURCE / name
-            data = path.read_bytes().replace(b'\r\n', b'\n')
+            data = path.read_bytes()
+            if path.suffix != '.webp':
+                data = data.replace(b'\r\n', b'\n')
             info = tarfile.TarInfo(name)
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
@@ -178,9 +188,9 @@ def deploy(options):
         credentials['edge-ca.crt'] = ca
 
     print('3/4 Starting the reverse SSH link and the private panel', flush=True)
-    panel_files = (
-        'configure.py', 'panel.py', '60-traveler-panel.conf', '61-traveler-panel-ios.conf',
-        'traveler-panel.service', 'traveler-panel-ios.service', 'traveler-panel-ios.socket',
+    panel_files = PANEL_FILES + (
+        '60-traveler-panel.conf', '61-traveler-panel-ios.conf',
+        'traveler-panel-ios.service', 'traveler-panel-ios.socket',
         'traveler-panel-ios-guard.service', 'traveler-panel-ios-guard.nft',
     )
     install_on(options, options.origin, options.origin_port, 'origin-finish', panel_files, credentials)
@@ -199,7 +209,8 @@ def main():
     install = commands.add_parser('install', help='prepare both VPSs')
     enroll = commands.add_parser('add-key', help='authorize another panel SSH public key')
     panel = commands.add_parser('panel', help='open a local tunnel to the panel')
-    for command in (install, enroll, panel):
+    upgrade = commands.add_parser('upgrade-panel', help='upgrade the private panel and traffic collector in place')
+    for command in (install, enroll, panel, upgrade):
         command.add_argument('--origin', type=ipv4, required=True)
         command.add_argument('--origin-port', type=port_number, default=22)
         command.add_argument('--identity', type=Path, help='path to the private SSH key on this computer')
@@ -216,6 +227,8 @@ def main():
     try:
         if options.command == 'install':
             deploy(options)
+        elif options.command == 'upgrade-panel':
+            install_on(options, options.origin, options.origin_port, 'upgrade-panel', PANEL_FILES, {})
         elif options.command == 'add-key':
             install_on(options, options.origin, options.origin_port, f'add-{options.kind}-key', (),
                        {f'{options.kind}.pub': public_key(options.public_key)})

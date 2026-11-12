@@ -11,8 +11,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: bash -n deploy.sh && bash -n setup-host.sh && bash -n split/install.sh
+      - run: bash -n deploy.sh && bash -n setup-host.sh && bash -n split/install.sh && bash -n split/build-traffic-sing-box.sh
       - run: python -m py_compile traveler.py tcp_fallback.py tests/integration.py tests/tcp_integration.py tests/external_tcp.py
-      - run: python -m py_compile split/install.py split/configure.py split/panel.py
+      - run: python -m py_compile split/install.py split/configure.py split/panel.py split/panel_state.py split/panel_traffic.py
+      - run: node --check split/panel-ui/app.js
       - run: python split/install.py install --help
       - run: python -m unittest discover -s tests -p 'test_*.py' -v

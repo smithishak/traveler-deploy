@@ -5,7 +5,6 @@ import grp
 import json
 import logging
 import os
-import re
 import secrets
 import socket
 import struct
@@ -15,26 +14,29 @@ import time
 import zlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 import qrcode
+
+from panel_state import (
+    ActionError, StateStore, atomic_write, json_bytes, public_state, read_json, read_telemetry, trojan,
+)
 
 
 CONFIG = Path('/etc/traveler-origin/config.json')
 TEMPLATE = Path('/etc/traveler-panel/profile.json')
 SOCKET = Path('/run/traveler-panel/panel.sock')
+STATE = Path('/var/lib/traveler-panel')
+TRAFFIC = Path('/var/lib/traveler-panel-traffic/stats.json')
+UI = Path('/opt/traveler-panel/panel-ui')
+UI_ASSETS = {
+    'style.css': 'text/css; charset=utf-8',
+    'app.js': 'text/javascript; charset=utf-8',
+    **{f'{name}.webp': 'image/webp' for name in ('cover', 'hero', 'phone', 'laptop', 'tablet')},
+}
 PANEL_HOSTS = {'127.0.0.1:8765', 'localhost:8765', 'traveler-panel:18765'}
 TOKEN = secrets.token_hex(32)
-LEGACY_NAME = 'traveler'
 UNIT = 'traveler-origin.service'
-
-
-def read_json(path):
-    return json.loads(path.read_text(encoding='utf-8'))
-
-
-def trojan(config):
-    return next(inbound for inbound in config['inbounds'] if inbound['type'] == 'trojan')
 
 
 def export_profile(inbound, user):
@@ -69,7 +71,7 @@ def apple_profile_qrs(name, profile):
     return base64.b64encode(header + compressed).decode('ascii')
 
 
-def qr_page(name, profile):
+def qr_page(name, profile, owner_id):
     code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
     code.add_data(apple_profile_qrs(name, profile))
     code.make(fit=True)
@@ -89,7 +91,7 @@ def qr_page(name, profile):
   main {{max-width:580px; margin:36px auto; padding:0 20px}}
   a {{color:#a2efd5}} svg {{display:block; width:100%; height:auto; background:white}}
 </style>
-<main><a href="/">← К профилям</a>
+<main><a href="/?user={quote(owner_id, safe='')}">← К устройствам пользователя</a>
 <h1>QR для iPhone</h1><p>{html.escape(name)}</p>
 <p>В sing-box откройте Profiles → ＋ → Scan QR Code и наведите камеру на экран.</p>
 <svg viewBox="0 0 {size} {size}" role="img" aria-label="QR для импорта профиля"
@@ -102,22 +104,21 @@ def apply_config(config, original):
     metadata = CONFIG.stat()
     with tempfile.TemporaryDirectory(prefix='.panel-', dir=CONFIG.parent) as directory:
         candidate = Path(directory) / 'config.json'
-        backup = Path(directory) / 'previous.json'
-        candidate.write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-        backup.write_bytes(original)
-        for path in (candidate, backup):
-            os.chown(path, metadata.st_uid, metadata.st_gid)
-            path.chmod(0o600)
+        replacement = json_bytes(config)
+        atomic_write(candidate, replacement)
         subprocess.run(
             ['/usr/local/bin/traveler-sing-box', 'check', '-c', str(candidate)],
             check=True, timeout=10, capture_output=True,
         )
-        candidate.replace(CONFIG)
+        if CONFIG.read_bytes() != original:
+            raise ValueError('Origin config changed while validating')
         try:
+            atomic_write(CONFIG, replacement, owner=metadata)
             restart_origin(config)
         except (OSError, subprocess.SubprocessError):
-            backup.replace(CONFIG)
-            restart_origin(json.loads(original))
+            if CONFIG.read_bytes() == replacement:
+                atomic_write(CONFIG, original, owner=metadata)
+                restart_origin(json.loads(original))
             raise
 
 
@@ -136,55 +137,24 @@ def restart_origin(config):
             time.sleep(0.15)
 
 
-def page(users):
-    rows = []
-    for user in users:
-        name = user['name']
-        safe_name = html.escape(name)
-        download = html.escape(urlencode({'device': name}))
-        revoke = 'Исходный профиль' if name == LEGACY_NAME else f'''
-            <details><summary>Отозвать</summary>
-            <form method="post" action="/revoke">
-              <input type="hidden" name="token" value="{TOKEN}">
-              <input type="hidden" name="device" value="{safe_name}">
-              <button class="danger">Подтвердить отзыв</button>
-            </form></details>'''
-        rows.append(f'''<li><strong>{safe_name}</strong><div class="actions">
-            <a href="/download?{download}">Скачать JSON</a>
-            <a href="/qr?{download}">QR для iPhone</a>{revoke}</div></li>''')
-    return f'''<!doctype html>
-<html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Traveler · Профили устройств</title>
-<style>
-  :root {{color-scheme:dark; font:16px/1.5 system-ui; background:#10151d; color:#edf4ff}}
-  body {{margin:0; padding:clamp(20px,6vw,72px) 20px}}
-  main {{max-width:720px; margin:auto}}
-  h1 {{font-size:clamp(2rem,6vw,3.5rem); line-height:1.05; margin:10px 0}}
-  p {{color:#b9c7d8}} small {{color:#89e3c4; letter-spacing:.1em}}
-  section {{background:#1a2330; border:1px solid #324256; border-radius:16px; padding:20px; margin:24px 0}}
-  h2 {{margin-top:0}} form,.actions {{display:flex; flex-wrap:wrap; align-items:center; gap:12px}}
-  input,button,a {{font:inherit; padding:8px 12px; border-radius:8px}}
-  input {{border:1px solid #60748c; background:#10151d; color:inherit; min-width:0; flex:1}}
-  button {{border:0; background:#89e3c4; color:#10231e; cursor:pointer; font-weight:650}}
-  a {{color:#a2efd5; border:1px solid #60748c; text-decoration:none}}
-  ul {{padding:0; margin:0; list-style:none}}
-  li {{display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px;
-       border-top:1px solid #324256; padding:12px 0; overflow-wrap:anywhere}}
-  summary {{cursor:pointer; color:#ffbdbd}} details form {{margin-top:8px}}
-  .danger {{background:#ffbdbd; color:#351919}}
-</style>
-<main><small>TRAVELER · ДОСТУП ЧЕРЕЗ SSH</small>
-<h1>Профили устройств</h1>
-<p>Создайте отдельный профиль для каждого устройства и импортируйте JSON в клиент sing-box.</p>
-<section><h2>Новое устройство</h2>
-<form method="post" action="/create">
-  <input type="hidden" name="token" value="{TOKEN}">
-  <label for="device">Название</label>
-  <input id="device" name="device" maxlength="60" required placeholder="Например, телефон">
-  <button>Создать профиль</button>
-</form>
-<p>При создании и отзыве профиля текущие соединения могут кратко прерваться.</p>
-</section><section><h2>Устройства</h2><ul>{''.join(rows)}</ul></section></main></html>'''
+def store():
+    return StateStore(STATE, CONFIG, apply_config, restart_origin)
+
+
+def api_state(state):
+    return {'csrf': TOKEN, **public_state(state, read_telemetry(TRAFFIC))}
+
+
+def find_profile(state, inbound, device_id, allow_legacy_name):
+    devices = [(user['id'], device) for user in state['users'] for device in user['devices']]
+    found = next((item for item in devices if item[1]['id'] == device_id), None)
+    if found is None and allow_legacy_name:
+        found = next((item for item in devices if item[1]['username'] == device_id), None)
+    if found is None:
+        raise ActionError('Профиль не найден.', 404)
+    owner_id, device = found
+    credential = next(user for user in inbound['users'] if user['name'] == device['username'])
+    return owner_id, device['name'], export_profile(inbound, credential)
 
 
 class PanelHandler(BaseHTTPRequestHandler):
@@ -192,7 +162,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         pass
 
     def reply(self, status, body='', content_type='text/plain; charset=utf-8', **headers):
-        data = body.encode('utf-8')
+        data = body.encode('utf-8') if isinstance(body, str) else body
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(data)))
@@ -201,7 +171,8 @@ class PanelHandler(BaseHTTPRequestHandler):
         self.send_header('Referrer-Policy', 'same-origin')
         self.send_header(
             'Content-Security-Policy',
-            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; "
+            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
             "form-action 'self'; base-uri 'none'",
         )
         for key, value in headers.items():
@@ -209,95 +180,111 @@ class PanelHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def json_reply(self, status, body):
+        self.reply(status, json_bytes(body), 'application/json; charset=utf-8')
+
+    def error(self, status, message):
+        if self.path.startswith('/api/'):
+            self.json_reply(status, {'error': message})
+        else:
+            self.reply(status, message)
+
     def valid_host(self):
         hosts = self.headers.get_all('Host', [])
         if (len(hosts) == 1 and hosts[0] in PANEL_HOSTS
                 and self.headers.get('Sec-Fetch-Site') != 'cross-site'):
             return True
-        self.reply(403, 'Доступ закрыт.')
+        self.error(403, 'Доступ закрыт.')
         return False
 
     def do_GET(self):
         if not self.valid_host():
             return
+        try:
+            self.get_route()
+        except ActionError as error:
+            self.error(error.status, str(error))
+        except (OSError, ValueError, KeyError, TypeError, StopIteration, subprocess.SubprocessError) as error:
+            logging.error('Failed to read panel (%s)', type(error).__name__)
+            self.error(503, 'Панель временно недоступна. Проверьте состояние Traveler.')
+
+    def get_route(self):
         request = urlsplit(self.path)
-        inbound = trojan(read_json(CONFIG))
         if request.path == '/':
-            self.reply(200, page(inbound['users']), 'text/html; charset=utf-8')
-        elif request.path in ('/download', '/qr'):
-            name = parse_qs(request.query).get('device', [''])[0]
-            user = next((user for user in inbound['users'] if user['name'] == name), None)
-            if user is None:
-                self.reply(404, 'Профиль не найден.')
+            self.reply(200, (UI / 'index.html').read_bytes(), 'text/html; charset=utf-8')
+            return
+        if request.path.startswith('/panel-ui/'):
+            filename = request.path.removeprefix('/panel-ui/')
+            if filename in UI_ASSETS:
+                self.reply(200, (UI / filename).read_bytes(), UI_ASSETS[filename])
                 return
-            profile = export_profile(inbound, user)
-            if request.path == '/qr':
-                try:
-                    body = qr_page(name, profile)
-                except qrcode.exceptions.DataOverflowError:
-                    self.reply(422, 'Профиль слишком большой для QR. Скачайте JSON.')
-                    return
-                self.reply(200, body, 'text/html; charset=utf-8')
+            raise ActionError('Файл не найден.', 404)
+        if request.path not in ('/api/state', '/profile', '/download', '/qr'):
+            raise ActionError('Страница не найдена.', 404)
+        _, config, state = store().load()
+        if request.path == '/api/state':
+            self.json_reply(200, api_state(state))
+            return
+        values = parse_qs(request.query).get('device', [])
+        if len(values) != 1:
+            raise ActionError('Профиль не найден.', 404)
+        owner_id, name, profile = find_profile(state, trojan(config), values[0], request.path != '/profile')
+        if request.path == '/qr':
+            try:
+                body = qr_page(name, profile, owner_id)
+            except qrcode.exceptions.DataOverflowError:
+                self.reply(422, 'Профиль слишком большой для QR. Скачайте JSON.')
                 return
-            filename = quote(f'Traveler-{name}.json', safe='')
-            self.reply(
-                200, json.dumps(profile, indent=2) + '\n', 'application/json',
-                **{'Content-Disposition': f"attachment; filename=\"Traveler.json\"; filename*=UTF-8''{filename}"},
-            )
-        else:
-            self.reply(404, 'Страница не найдена.')
+            self.reply(200, body, 'text/html; charset=utf-8')
+            return
+        filename = quote(f'Traveler-{name}.json', safe='')
+        self.reply(
+            200, json_bytes(profile), 'application/json; charset=utf-8',
+            **{'Content-Disposition': f"attachment; filename=\"Traveler.json\"; filename*=UTF-8''{filename}"},
+        )
 
     def do_POST(self):
         if not self.valid_host():
             return
-        if self.path not in ('/create', '/revoke'):
-            self.reply(404, 'Страница не найдена.')
+        if self.path != '/api/action':
+            self.error(404, 'Страница не найдена.')
             return
         if self.headers.get_all('Origin') != ['http://' + self.headers['Host']]:
-            self.reply(403, 'Доступ закрыт.')
+            self.error(403, 'Доступ закрыт.')
             return
-        if self.headers.get_content_type() != 'application/x-www-form-urlencoded':
-            self.reply(415, 'Неверный формат запроса.')
+        if self.headers.get_content_type() != 'application/json':
+            self.error(415, 'Неверный формат запроса.')
             return
         try:
-            length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 2048:
+            lengths = self.headers.get_all('Content-Length', [])
+            if len(lengths) != 1 or self.headers.get_all('Transfer-Encoding'):
                 raise ValueError
-            fields = parse_qs(self.rfile.read(length).decode('ascii'), max_num_fields=4)
-        except ValueError:
-            self.reply(400, 'Неверный формат запроса.')
-            return
-        token = fields.get('token', [''])[0]
-        if not secrets.compare_digest(token.encode('utf-8'), TOKEN.encode('ascii')):
-            self.reply(403, 'Откройте панель заново и повторите действие.')
-            return
-        name = fields.get('device', [''])[0].strip()
-        if not re.fullmatch(r'[\w .()\-]{1,60}', name):
-            self.reply(400, 'В названии можно использовать буквы, цифры, пробелы, точки, скобки и дефисы.')
-            return
-        original = CONFIG.read_bytes()
-        config = json.loads(original)
-        inbound = trojan(config)
-        users = inbound['users']
-        exists = any(user['name'] == name for user in users)
-        if self.path == '/create':
-            if exists:
-                self.reply(409, 'Профиль с таким названием уже есть.')
+            length = int(lengths[0])
+            if not 0 < length <= 4096:
+                raise ValueError
+            body = self.rfile.read(length)
+            if len(body) != length:
+                raise ValueError
+            fields = json.loads(body.decode('utf-8'))
+            if not isinstance(fields, dict):
+                raise ValueError
+            token = fields.get('csrf')
+            if not isinstance(token, str) or not token.isascii() or not secrets.compare_digest(token, TOKEN):
+                self.error(403, 'Откройте панель заново и повторите действие.')
                 return
-            users.append({'name': name, 'password': secrets.token_urlsafe(32)})
-        else:
-            if name == LEGACY_NAME or not exists:
-                self.reply(400, 'Этот профиль нельзя отозвать.')
-                return
-            inbound['users'] = [user for user in users if user['name'] != name]
+        except (ValueError, OSError, RecursionError):
+            self.error(400, 'Неверный формат запроса.')
+            return
         try:
-            apply_config(config, original)
-        except (OSError, subprocess.SubprocessError) as error:
-            logging.error('Failed to apply profile change (%s)', type(error).__name__)
-            self.reply(503, 'Изменение не применилось. Проверьте состояние Traveler.')
+            state = store().action(fields)
+        except ActionError as error:
+            self.error(error.status, str(error))
             return
-        self.reply(303, Location='/')
-
+        except (OSError, ValueError, KeyError, TypeError, StopIteration, subprocess.SubprocessError) as error:
+            logging.error('Failed to apply profile change (%s)', type(error).__name__)
+            self.error(503, 'Изменение не применилось. Проверьте состояние Traveler.')
+            return
+        self.json_reply(200, api_state(state))
 
 class PanelServer(HTTPServer):
     address_family = socket.AF_UNIX
@@ -317,6 +304,10 @@ class PanelServer(HTTPServer):
 
 
 if __name__ == '__main__':
+    try:
+        store().load()
+    except (OSError, ValueError, KeyError, TypeError, StopIteration, subprocess.SubprocessError) as error:
+        logging.error('Failed to recover panel state (%s)', type(error).__name__)
     SOCKET.unlink(missing_ok=True)
     with PanelServer(str(SOCKET), PanelHandler) as server:
         server.serve_forever()

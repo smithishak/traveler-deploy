@@ -117,12 +117,137 @@ edge_install() {
     fi
 }
 
+panel_health() {
+    local since=$1 attempt
+    for attempt in {1..25}; do
+        if systemctl is-active --quiet traveler-panel-traffic.service &&
+            python3 -c 'from datetime import datetime; from pathlib import Path; import json, sys
+data = json.loads(Path("/var/lib/traveler-panel-traffic/stats.json").read_text())
+sys.exit(datetime.fromisoformat(data["updated_at"]).timestamp() < int(sys.argv[1]))' "$since" 2>/dev/null &&
+            curl --silent --fail --max-time 2 --unix-socket /run/traveler-panel/panel.sock \
+            -H 'Host: localhost:8765' http://localhost/api/state | python3 -c \
+            'import json, sys; sys.exit(not json.load(sys.stdin).get("telemetry"))' 2>/dev/null; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+upgrade_panel() {
+    local origin=/etc/traveler-origin/config.json binary=/usr/local/bin/traveler-sing-box
+    local panel=/opt/traveler-panel units=/etc/systemd/system
+    local backup file candidate since dependency previous_panel=0 previous_traffic=0 changed_origin=0
+    local files=(
+        "$origin" "$binary" "$panel/panel.py" "$panel/panel_state.py" "$panel/panel_traffic.py"
+        "$units/traveler-panel.service" "$units/traveler-panel-traffic.service"
+        /var/lib/traveler-panel/state.json
+    )
+    [[ -x $binary && -s $origin && -s /etc/traveler-panel/profile.json ]] ||
+        die 'The existing origin and panel profile template must be installed first.'
+    systemctl is-active --quiet traveler-origin.service || die 'The origin is not active.'
+    for file in panel-ui/*; do files+=("$panel/$file"); done
+    local missing=()
+    for dependency in ca-certificates curl git python3-grpcio python3-protobuf python3-qrcode; do
+        if [[ $(dpkg-query -W -f='${db:Status-Status}' "$dependency" 2>/dev/null) != installed ]]; then
+            missing+=("$dependency")
+        fi
+    done
+    if ((${#missing[@]})); then packages "${missing[@]}"; fi
+    if ! id traveler-panel-traffic >/dev/null 2>&1; then
+        useradd --system --user-group --no-create-home --home-dir /nonexistent \
+            --shell /usr/sbin/nologin traveler-panel-traffic
+    fi
+    candidate=$binary
+    if [[ $("$binary" version) != *with_v2ray_api* ]]; then
+        candidate="$PWD/sing-box-traffic.candidate"
+        if [[ -f $candidate ]]; then
+            chmod 700 "$candidate"
+            local version_info
+            version_info=$("$candidate" version)
+            [[ $version_info == *'sing-box version 1.14.4'* &&
+                $version_info == *'c005f35300ce76427dc285481ec5695f5b179cd2'* &&
+                $version_info == *with_v2ray_api* ]] || die 'Invalid prebuilt statistics candidate.'
+        else
+            nice -n 10 bash build-traffic-sing-box.sh "$candidate"
+        fi
+    fi
+    python3 -m py_compile panel.py panel_state.py panel_traffic.py
+
+    install -d -m 700 /var/backups/traveler-panel
+    backup=$(mktemp -d /var/backups/traveler-panel/upgrade.XXXXXXXX)
+    install -d -m 700 "$backup/files"
+    if systemctl is-active --quiet traveler-panel.service; then previous_panel=1; fi
+    if systemctl is-active --quiet traveler-panel-traffic.service; then previous_traffic=1; fi
+
+    rollback_panel_upgrade() {
+        local status=$?
+        trap - EXIT
+        if ((status)); then
+            set +e
+            systemctl stop traveler-panel.service traveler-panel-traffic.service 2>/dev/null
+            while IFS= read -r file; do
+                if ((!changed_origin)) && [[ $file == "$origin" || $file == "$binary" ]]; then continue; fi
+                if [[ -e "$backup/files$file" ]]; then
+                    cp -a --remove-destination -- "$backup/files$file" "$file"
+                else
+                    rm -f -- "$file"
+                fi
+            done < "$backup/paths"
+            systemctl daemon-reload
+            if ((changed_origin)); then systemctl restart traveler-origin.service; fi
+            if ((previous_panel)); then systemctl start traveler-panel.service; fi
+            if ((previous_traffic)); then systemctl start traveler-panel-traffic.service; fi
+            printf 'Upgrade failed. Previous files restored from %s. Check service status.\n' "$backup" >&2
+        fi
+        exit "$status"
+    }
+
+    # Freeze panel writes while capturing the active configuration and releasing the new code.
+    : > "$backup/paths"
+    trap rollback_panel_upgrade EXIT
+    if ((previous_panel)); then systemctl stop traveler-panel.service; fi
+    if ((previous_traffic)); then systemctl stop traveler-panel-traffic.service; fi
+    [[ ! -e /var/lib/traveler-panel/pending.json ]] ||
+        die 'The panel has an unfinished configuration change; restart it and resolve that first.'
+    for file in "${files[@]}"; do
+        if [[ -e $file ]]; then cp -a --parents "$file" "$backup/files/" || die 'Could not back up the current panel.'; fi
+        printf '%s\n' "$file" >> "$backup/paths"
+    done
+    python3 configure.py traffic
+    "$candidate" check -c "$PWD/traffic-config.json"
+
+    install -d -m 755 "$panel" "$panel/panel-ui"
+    install -m 644 panel.py panel_state.py panel_traffic.py "$panel/"
+    install -m 644 panel-ui/* "$panel/panel-ui/"
+    install -m 644 traveler-panel.service traveler-panel-traffic.service "$units/"
+    if [[ $candidate != "$binary" ]]; then
+        changed_origin=1
+        install -m 755 "$candidate" "$binary.next"
+        mv -f -- "$binary.next" "$binary"
+    fi
+    if ! python3 -c 'import json, sys
+with open(sys.argv[1]) as current, open(sys.argv[2]) as candidate:
+    sys.exit(json.load(current) != json.load(candidate))' "$origin" traffic-config.json; then
+        changed_origin=1
+        install -m 600 -o traveler-origin -g traveler-origin traffic-config.json "$origin.next"
+        mv -f -- "$origin.next" "$origin"
+    fi
+    systemctl daemon-reload
+    if ((changed_origin)); then systemctl restart traveler-origin.service; fi
+    since=$(date +%s)
+    systemctl start traveler-panel-traffic.service traveler-panel.service
+    panel_health "$since" || die 'The panel or its traffic API did not respond.'
+    systemctl enable traveler-panel.service traveler-panel-traffic.service
+    printf 'Panel and traffic collector verified. Backup: %s\n' "$backup"
+    trap - EXIT
+}
+
 origin_finish() {
     ensure_account traveler-panel-access
     ensure_account traveler-panel-ios
     install -d -m 755 /opt/traveler-panel
     install -d -m 700 /etc/traveler-panel
-    install -m 644 panel.py /opt/traveler-panel/panel.py
     install -m 600 -o traveler-origin -g traveler-origin edge.known_hosts /var/lib/traveler-origin/.ssh/known_hosts
     if [[ -f desktop.pub ]]; then
         add_key traveler-panel-access desktop.pub 'restrict,port-forwarding' traveler-desktop
@@ -141,12 +266,13 @@ origin_finish() {
     install -m 600 profile.json /etc/traveler-panel/profile.json
     nft -c -f traveler-panel-ios-guard.nft
     install -m 600 traveler-panel-ios-guard.nft /etc/traveler-panel/ios-guard.nft
-    install -m 644 traveler-panel*.service traveler-panel-ios.socket /etc/systemd/system/
+    install -m 644 traveler-panel-ios.service traveler-panel-ios-guard.service traveler-panel-ios.socket /etc/systemd/system/
     install -m 644 traveler-edge-link.service /etc/systemd/system/
     systemctl daemon-reload
     systemctl restart traveler-panel-ios-guard.service
-    systemctl enable --now traveler-panel-ios.socket traveler-edge-link.service traveler-panel.service
-    systemctl restart traveler-edge-link.service traveler-panel.service
+    systemctl enable --now traveler-panel-ios.socket traveler-edge-link.service
+    systemctl restart traveler-edge-link.service
+    upgrade_panel
     systemctl is-active traveler-origin traveler-panel traveler-edge-link traveler-panel-ios.socket
 }
 
@@ -154,6 +280,7 @@ case ${1:-} in
     origin-init) origin_init ;;
     edge-install) edge_install ;;
     origin-finish) origin_finish ;;
+    upgrade-panel) upgrade_panel ;;
     add-desktop-key) ensure_account traveler-panel-access; add_key traveler-panel-access desktop.pub 'restrict,port-forwarding' traveler-desktop ;;
     add-iphone-key) ensure_account traveler-panel-ios; add_key traveler-panel-ios iphone.pub 'restrict,port-forwarding' traveler-iphone ;;
     *) die 'Use split/install.py from the administrator computer.' ;;

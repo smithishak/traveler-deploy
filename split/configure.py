@@ -34,6 +34,17 @@ def origin():
             temporary.unlink(missing_ok=True)
 
 
+def traffic():
+    config = json.loads(Path('/etc/traveler-origin/config.json').read_text(encoding='utf-8'))
+    inbound = next(item for item in config['inbounds'] if item['type'] == 'trojan')
+    experimental = config.setdefault('experimental', {})
+    experimental['v2ray_api'] = {
+        'listen': '127.0.0.1:19090',
+        'stats': {'enabled': True, 'users': [item['name'] for item in inbound['users']]},
+    }
+    Path('traffic-config.json').write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
+
+
 def edge(settings):
     host = settings['public_host']
     path = settings['ws_path']
@@ -128,6 +139,8 @@ if __name__ == '__main__':
     action = sys.argv[1]
     if action == 'origin':
         origin()
+    elif action == 'traffic':
+        traffic()
     else:
         settings = json.loads(Path('settings.json').read_text(encoding='utf-8'))
         {'edge': edge, 'finish': finish}[action](settings)

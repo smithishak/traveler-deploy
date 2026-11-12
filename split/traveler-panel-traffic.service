@@ -1,0 +1,25 @@
+[Unit]
+Description=Traveler per-profile traffic collector
+After=traveler-origin.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/traveler-panel/panel_traffic.py
+User=traveler-panel-traffic
+Group=traveler-panel-traffic
+StateDirectory=traveler-panel-traffic
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
