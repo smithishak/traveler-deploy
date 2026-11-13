@@ -9,6 +9,11 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
+if __package__:
+    from .panel_probe import is_probe
+else:
+    from panel_probe import is_probe
+
 
 LEGACY_NAME = 'traveler'
 DEVICE_KINDS = {'phone', 'laptop', 'tablet', 'other'}
@@ -82,6 +87,7 @@ def make_device(device_id, name, kind, username, created_at):
 
 def reconcile(state, credentials):
     """Import pre-existing credentials without renaming or copying passwords."""
+    credentials = [credential for credential in credentials if not is_probe(credential)]
     available = {credential['name'] for credential in credentials}
     assigned = set()
     for user in state['users']:
@@ -105,9 +111,13 @@ def read_telemetry(path):
         updated_at = datetime.fromisoformat(report['updated_at'].replace('Z', '+00:00'))
         age = (datetime.now(timezone.utc) - updated_at).total_seconds()
         users = report['users']
-        if -30 <= age <= TELEMETRY_MAX_AGE and isinstance(users, dict):
-            return users
-    except (OSError, ValueError, AttributeError, KeyError, TypeError):
+        if age >= -30 and isinstance(users, dict):
+            return {
+                'updated_at': updated_at.astimezone(timezone.utc).isoformat(),
+                'fresh': age <= TELEMETRY_MAX_AGE,
+                'users': users,
+            }
+    except (OSError, ValueError, AttributeError, KeyError, TypeError, OverflowError):
         pass
     return None
 
@@ -126,11 +136,12 @@ def seen_at(value):
 
 def public_state(state, telemetry):
     users = []
+    metrics = telemetry['users'] if telemetry is not None else {}
     for user in state['users']:
         devices = []
         for device in user['devices']:
             username = device['username']
-            stats = telemetry.get(username) if telemetry is not None else None
+            stats = metrics.get(username)
             stats = stats if isinstance(stats, dict) else {}
             counters = {key: stats.get(key) for key in ('upload', 'download')}
             for key, value in counters.items():
@@ -145,7 +156,11 @@ def public_state(state, telemetry):
             'id': user['id'], 'name': user['name'], 'created_at': user['created_at'],
             'devices': devices,
         })
-    return {'users': users, 'settings': state['settings'], 'telemetry': telemetry is not None}
+    return {
+        'users': users, 'settings': state['settings'],
+        'telemetry': telemetry['fresh'] if telemetry is not None else False,
+        'telemetry_updated_at': telemetry['updated_at'] if telemetry is not None else None,
+    }
 
 
 def require_name(fields, entries):
@@ -185,10 +200,19 @@ def mutate(state, config, fields):
         users.append({'id': secrets.token_hex(16), 'name': name,
                       'created_at': timestamp(), 'devices': []})
         return
-    if action not in ('create_device', 'delete_device', 'delete_user'):
+    if action not in ('create_device', 'rotate_device', 'delete_device', 'delete_user'):
         raise ActionError('Неизвестное действие.')
     user = find_entry(users, fields.get('user_id'), 'Пользователь не найден.')
     inbound = trojan(config)
+    if action == 'rotate_device':
+        device = find_entry(user['devices'], fields.get('device_id'), 'Устройство не найдено.')
+        username = device['username']
+        if username == LEGACY_NAME:
+            raise ActionError('Исходный профиль защищён от перевыпуска.', 409)
+        credential = next(item for item in inbound['users'] if item['name'] == username)
+        credential['password'] = secrets.token_urlsafe(32)
+        return device['id']
+    issued_device_id = None
     if action == 'create_device':
         name = require_name(fields, user['devices'])
         kind = fields.get('kind')
@@ -198,6 +222,7 @@ def mutate(state, config, fields):
         username = 'device-' + device_id
         user['devices'].append(make_device(device_id, name, kind, username, timestamp()))
         inbound['users'].append({'name': username, 'password': secrets.token_urlsafe(32)})
+        issued_device_id = device_id
     else:
         deleting_user = action == 'delete_user'
         devices = user['devices'] if deleting_user else [
@@ -213,7 +238,9 @@ def mutate(state, config, fields):
             user['devices'].remove(devices[0])
     stats = config.get('experimental', {}).get('v2ray_api', {}).get('stats')
     if stats is not None:
-        stats['users'] = [credential['name'] for credential in inbound['users']]
+        stats['users'] = [credential['name'] for credential in inbound['users']
+                          if not is_probe(credential)]
+    return issued_device_id
 
 
 class StateStore:
@@ -266,11 +293,11 @@ class StateStore:
     def action(self, fields):
         original, config, state = self.load()
         unchanged = json_bytes(config)
-        mutate(state, config, fields)
+        issued_device_id = mutate(state, config, fields)
         replacement = json_bytes(config)
         if replacement == unchanged:
             self.save(state)
-            return state
+            return state, issued_device_id
         pending = {'before': digest(original), 'after': digest(replacement), 'state': state}
         atomic_write(self.pending_path, json_bytes(pending))
         try:
@@ -281,4 +308,4 @@ class StateStore:
             raise
         self.save(state)
         self.clear_pending()
-        return state
+        return state, issued_device_id

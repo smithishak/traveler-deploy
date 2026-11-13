@@ -7,6 +7,7 @@ import secrets
 import sys
 import tempfile
 from pathlib import Path
+from panel_probe import ensure_probe, is_probe
 
 
 def origin():
@@ -37,10 +38,11 @@ def origin():
 def traffic():
     config = json.loads(Path('/etc/traveler-origin/config.json').read_text(encoding='utf-8'))
     inbound = next(item for item in config['inbounds'] if item['type'] == 'trojan')
+    ensure_probe(config, inbound)
     experimental = config.setdefault('experimental', {})
     experimental['v2ray_api'] = {
         'listen': '127.0.0.1:19090',
-        'stats': {'enabled': True, 'users': [item['name'] for item in inbound['users']]},
+        'stats': {'enabled': True, 'users': [item['name'] for item in inbound['users'] if not is_probe(item)]},
     }
     Path('traffic-config.json').write_text(json.dumps(config, indent=2) + '\n', encoding='utf-8')
 

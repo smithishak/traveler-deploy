@@ -2,6 +2,7 @@ import base64
 import gzip
 import html
 import grp
+import ipaddress
 import json
 import logging
 import os
@@ -18,6 +19,8 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import qrcode
 
+from panel_diagnostics import check_route
+from panel_probe import is_probe
 from panel_state import (
     ActionError, StateStore, atomic_write, json_bytes, public_state, read_json, read_telemetry, trojan,
 )
@@ -25,6 +28,7 @@ from panel_state import (
 
 CONFIG = Path('/etc/traveler-origin/config.json')
 TEMPLATE = Path('/etc/traveler-panel/profile.json')
+PROBE_EGRESS = Path('/etc/traveler-panel/probe-egress-ip')
 SOCKET = Path('/run/traveler-panel/panel.sock')
 STATE = Path('/var/lib/traveler-panel')
 TRAFFIC = Path('/var/lib/traveler-panel-traffic/stats.json')
@@ -37,6 +41,7 @@ UI_ASSETS = {
 PANEL_HOSTS = {'127.0.0.1:8765', 'localhost:8765', 'traveler-panel:18765'}
 TOKEN = secrets.token_hex(32)
 UNIT = 'traveler-origin.service'
+PROBE_INTERVAL = 30
 
 
 def export_profile(inbound, user):
@@ -246,7 +251,7 @@ class PanelHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.valid_host():
             return
-        if self.path != '/api/action':
+        if self.path not in ('/api/action', '/api/diagnostics'):
             self.error(404, 'Страница не найдена.')
             return
         if self.headers.get_all('Origin') != ['http://' + self.headers['Host']]:
@@ -275,8 +280,11 @@ class PanelHandler(BaseHTTPRequestHandler):
         except (ValueError, OSError, RecursionError):
             self.error(400, 'Неверный формат запроса.')
             return
+        if self.path == '/api/diagnostics':
+            self.run_diagnostics(fields)
+            return
         try:
-            state = store().action(fields)
+            state, issued_device_id = store().action(fields)
         except ActionError as error:
             self.error(error.status, str(error))
             return
@@ -284,10 +292,42 @@ class PanelHandler(BaseHTTPRequestHandler):
             logging.error('Failed to apply profile change (%s)', type(error).__name__)
             self.error(503, 'Изменение не применилось. Проверьте состояние Traveler.')
             return
-        self.json_reply(200, api_state(state))
+        response = api_state(state)
+        if issued_device_id is not None:
+            response['created_device_id'] = issued_device_id
+        self.json_reply(200, response)
+
+    def run_diagnostics(self, fields):
+        if set(fields) != {'csrf'}:
+            self.error(400, 'Проверка использует настройки сервера.')
+            return
+        now = time.monotonic()
+        if now < self.server.next_probe_at:
+            remaining = max(1, int(self.server.next_probe_at - now + .999))
+            self.error(429, f'Повтори проверку через {remaining} с.')
+            return
+        try:
+            inbound = trojan(read_json(CONFIG))
+            credential = next((item for item in inbound['users'] if is_probe(item)), None)
+            if credential is None:
+                self.error(503, 'Служебный профиль ещё не настроен.')
+                return
+            try:
+                expected = str(ipaddress.IPv4Address(PROBE_EGRESS.read_text(encoding='ascii').strip()))
+            except FileNotFoundError:
+                expected = None
+            self.server.next_probe_at = now + PROBE_INTERVAL
+            result = check_route(export_profile(inbound, credential), expected_egress_ip=expected)
+        except (OSError, ValueError, KeyError, TypeError, StopIteration) as error:
+            logging.warning('Diagnostics failed (%s)', type(error).__name__)
+            self.error(503, 'Не удалось запустить проверку маршрута.')
+            return
+        self.json_reply(200, result)
+
 
 class PanelServer(HTTPServer):
     address_family = socket.AF_UNIX
+    next_probe_at = 0
 
     def server_bind(self):
         self.socket.bind(self.server_address)

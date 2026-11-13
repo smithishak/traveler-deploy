@@ -5,6 +5,7 @@ const panel = byId('panel');
 const entries = byId('entries');
 const heading = byId('heading');
 const dialog = byId('dialog');
+const issue = byId('issue');
 const cover = byId('cover');
 const coverPrint = cover.querySelector('.cover-print');
 const initialUser = new URLSearchParams(location.search).get('user');
@@ -12,7 +13,8 @@ const dateFormat = new Intl.DateTimeFormat('ru-RU', {
   day: 'numeric', month: 'long', year: 'numeric',
 });
 const timeFormat = new Intl.DateTimeFormat('ru-RU', {
-  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  second: '2-digit', timeZoneName: 'short',
 });
 const numberFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 });
 const kinds = {
@@ -27,7 +29,13 @@ let busy = false;
 let polling = false;
 let revision = 0;
 let introTimer;
+let issuedDevice;
+let routeCheckPending = false;
+let lastRouteCheck;
+let lastRouteError = '';
+let pollFailed = false;
 const deviceStats = new Map();
+let priorActivity = new Map();
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -67,7 +75,8 @@ function activityText(date) {
   const minutes = Math.max(0, Math.floor((Date.now() - date) / 60000));
   if (minutes < 1) return 'Только что';
   if (minutes < 60) return `${minutes} мин назад`;
-  return timeFormat.format(date);
+  if (minutes < 1440) return `${Math.floor(minutes / 60)} ч назад`;
+  return `${Math.floor(minutes / 1440)} дн. назад`;
 }
 
 function trafficText(value) {
@@ -123,6 +132,10 @@ function fact(title, value, list) {
   return output;
 }
 
+function profileLink(path, device) {
+  return `/${path}?${new URLSearchParams({ device: device.id })}`;
+}
+
 function deviceCard(item, device) {
   const kind = Object.hasOwn(kinds, device.kind) ? device.kind : 'other';
   const card = element('article', 'device');
@@ -142,40 +155,81 @@ function deviceCard(item, device) {
   name.append(element('h2', null, device.name), element('small', null, kinds[kind]));
   const facts = element('dl', 'facts');
   fact('Создано', creationDate(device.created_at), facts);
-  const activity = fact('Последняя активность', '—', facts);
+  const activityField = fact('Последняя активность', undefined, facts);
+  const activity = element('span', 'activity-label', '—');
+  const exactTime = element('time', 'reading-time');
+  exactTime.hidden = true;
+  activityField.append(activity, exactTime);
   const download = fact('Получено', '—', facts);
   const upload = fact('Отправлено', '—', facts);
-  deviceStats.set(String(device.id), { activity, download, upload });
+  deviceStats.set(String(device.id), { activity, exactTime, download, upload });
   const actions = element('div', 'actions');
-  const query = new URLSearchParams({ device: device.id });
   actions.append(
-    link('Скачать JSON', 'button', `/profile?${query}`),
-    link('Показать QR', 'button button-primary', `/qr?${query}`),
+    link('Скачать JSON', 'button', profileLink('profile', device)),
+    link('Показать QR', 'button button-primary', profileLink('qr', device)),
   );
   if (!device.legacy) {
+    const rotate = button('Перевыпустить', 'button button-quiet', () => {
+      openDialog('rotate_device', item, device);
+    });
+    rotate.setAttribute('aria-label', `Перевыпустить профиль «${device.name}»`);
     const remove = button('Удалить', 'button button-quiet device-delete', () => {
       openDialog('delete_device', item, device);
     });
     remove.setAttribute('aria-label', `Удалить ${device.name}`);
-    actions.append(remove);
+    actions.append(rotate, remove);
   }
   content.append(name, facts, actions);
   card.append(art, content);
   return card;
 }
 
+function telemetryStatus() {
+  const updated = timestamp(state.telemetry_updated_at);
+  if (state.telemetry && !pollFailed) return { status: 'fresh', updated };
+  if (updated) return { status: 'stale', updated };
+  return { status: 'unavailable', updated: null };
+}
+
+function displayTime(node, date) {
+  node.hidden = !date;
+  node.textContent = date ? timeFormat.format(date) : '';
+  if (node.tagName === 'TIME') node.dateTime = date ? date.toISOString() : '';
+}
+
 function refreshStats(item) {
-  if (!item) return;
+  const telemetry = telemetryStatus();
+  byId('telemetry-note').hidden = !item || telemetry.status === 'fresh';
+  byId('telemetry-note').textContent = telemetry.status === 'stale'
+    ? `Показана сохранённая статистика за ${timeFormat.format(telemetry.updated)}.`
+    : 'Статистика активности недоступна.';
+  if (!item) {
+    priorActivity.clear();
+    return;
+  }
+  const nextActivity = new Map();
   for (const device of item.devices) {
-    const stats = deviceStats.get(String(device.id));
+    const id = String(device.id);
+    const stats = deviceStats.get(id);
     if (!stats) continue;
     const date = timestamp(device.last_seen);
-    stats.activity.textContent = date ? activityText(date) : state.telemetry ? 'Пока нет данных' : 'Недоступна';
-    stats.activity.title = date ? timeFormat.format(date) : '';
-    stats.activity.classList.toggle('recent', Boolean(date && Date.now() - date < 5 * 60 * 1000));
+    const firstTraffic = date && priorActivity.get(id) === null
+      && telemetry.status === 'fresh' && !document.hidden;
+    const label = date ? activityText(date)
+      : telemetry.status === 'fresh' ? 'Трафика пока не было'
+      : telemetry.status === 'stale' ? 'Нет сохранённых данных' : 'Недоступна';
+    if (stats.activity.textContent !== label) stats.activity.textContent = label;
+    displayTime(stats.exactTime, date);
+    stats.activity.classList.toggle('recent', Boolean(
+      date && telemetry.status === 'fresh' && Date.now() - date < 5 * 60 * 1000
+    ));
+    if (firstTraffic) stats.activity.classList.add('first-traffic');
     stats.upload.textContent = trafficText(device.upload);
     stats.download.textContent = trafficText(device.download);
+    if (date || telemetry.status === 'fresh') nextActivity.set(id, date);
+    else if (priorActivity.has(id)) nextActivity.set(id, priorActivity.get(id));
   }
+  priorActivity = nextActivity;
 }
 
 function render() {
@@ -184,7 +238,7 @@ function render() {
   byId('screen').hidden = false;
   byId('settings').hidden = false;
   const signature = JSON.stringify(item
-    ? [item.id, item.name, state.telemetry, item.devices.map(d => [d.id, d.name, d.kind, d.created_at, d.legacy])]
+    ? [item.id, item.name, item.devices.map(d => [d.id, d.name, d.kind, d.created_at, d.legacy])]
     : state.users.map(u => [u.id, u.name, u.devices.length]));
   if (signature !== listSignature) {
     listSignature = signature;
@@ -195,7 +249,6 @@ function render() {
     byId('back').hidden = !item;
     byId('add').textContent = item ? '+ Устройство' : '+ Пользователь';
     if (item) {
-      if (!state.telemetry) entries.append(element('p', 'telemetry-note', 'Сервер не передаёт статистику активности.'));
       if (!item.devices.length) entries.append(element('p', 'empty', 'У этого пользователя пока нет устройств.'));
       for (const device of item.devices) entries.append(deviceCard(item, device));
       if (!item.devices.some(device => device.legacy)) {
@@ -209,6 +262,8 @@ function render() {
     }
   }
   refreshStats(item);
+  if (dialog.open && intent?.action === 'settings') updateStatsHealth();
+  if (issue.open) updateIssue();
 }
 
 function showError(node, message) {
@@ -227,7 +282,7 @@ async function request(path, options = {}) {
   if (!response.ok || result.error) {
     throw new Error(typeof result.error === 'string' ? result.error : 'Сервер не выполнил запрос.');
   }
-  return result.state ?? result;
+  return result;
 }
 
 function showCover(focus = false) {
@@ -250,9 +305,10 @@ async function loadState(reportFailure = false) {
   const initial = !state;
   const requestedAt = revision;
   try {
-    const next = await request('/api/state');
+    const result = await request('/api/state');
     if (revision !== requestedAt) return;
-    state = next;
+    state = result.state ?? result;
+    pollFailed = false;
     if (selectedId !== null && !user()) navigate(null, false);
     else render();
     showError(byId('error'), '');
@@ -263,6 +319,9 @@ async function loadState(reportFailure = false) {
       byId('loading').hidden = true;
       showError(byId('error'), error.message);
       byId('retry').hidden = false;
+    } else if (revision === requestedAt) {
+      pollFailed = true;
+      render();
     }
     if (reportFailure) throw error;
   } finally {
@@ -279,6 +338,7 @@ function openDialog(action, item, device) {
     create_device: 'Добавить устройство',
     delete_user: 'Удалить пользователя?',
     delete_device: 'Удалить устройство?',
+    rotate_device: 'Перевыпустить профиль?',
     settings: 'Настройки',
   };
   byId('dialog-title').textContent = titles[action];
@@ -292,11 +352,15 @@ function openDialog(action, item, device) {
   byId('replay').hidden = !settings;
   byId('stats-health').hidden = !settings;
   byId('refresh-stats').hidden = !settings;
+  byId('diagnostics').hidden = !settings;
   if (settings) updateStatsHealth();
-  byId('submit').textContent = create ? 'Добавить' : settings ? 'Сохранить' : 'Удалить';
+  byId('submit').textContent = create ? 'Добавить' : settings ? 'Сохранить'
+    : action === 'rotate_device' ? 'Перевыпустить' : 'Удалить';
   const note = action === 'delete_user'
     ? `Профили пользователя «${item.name}» потеряют доступ к Traveler.`
-    : action === 'delete_device' ? `Профиль «${device.name}» потеряет доступ к Traveler.` : '';
+    : action === 'delete_device' ? `Профиль «${device.name}» потеряет доступ к Traveler.`
+    : action === 'rotate_device'
+      ? `Старый профиль «${device.name}» сразу потеряет доступ. Установите новый профиль на этом устройстве.` : '';
   showError(byId('dialog-note'), note);
   showError(byId('dialog-error'), '');
   dialog.showModal();
@@ -326,16 +390,22 @@ async function submitAction(event) {
   byId('submit').disabled = true;
   byId('cancel').disabled = true;
   try {
-    state = await request('/api/action', {
+    const result = await request('/api/action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    state = result.state ?? result;
+    pollFailed = false;
     dialog.close();
     if (selectedId !== null && !user()) navigate(null);
     else {
       render();
       if (action === 'delete_device') heading.focus();
+    }
+    if (result.created_device_id != null && ['create_device', 'rotate_device'].includes(action)) {
+      const nextDevice = user()?.devices.find(d => String(d.id) === String(result.created_device_id));
+      if (nextDevice) showIssue(nextDevice, action === 'rotate_device');
     }
   } catch (error) {
     showError(byId('dialog-error'), error.message);
@@ -347,9 +417,90 @@ async function submitAction(event) {
 }
 
 function updateStatsHealth() {
-  byId('stats-health').textContent = state.telemetry
+  const { status, updated } = telemetryStatus();
+  byId('stats-health').textContent = status === 'fresh'
     ? 'Сбор статистики работает.'
+    : status === 'stale' ? `Последнее обновление статистики: ${timeFormat.format(updated)}.`
     : 'Статистика недоступна. Проверьте сборщик на сервере.';
+}
+
+function showIssue(device, rotated) {
+  issuedDevice = { id: String(device.id), rotated, waiting: false };
+  byId('issue-label').textContent = rotated ? 'Профиль перевыпущен' : 'Профиль выдан';
+  byId('issue-title').textContent = device.name;
+  byId('issue-json').href = profileLink('profile', device);
+  byId('issue-qr').href = profileLink('qr', device);
+  byId('issue-status').classList.remove('recent', 'first-traffic');
+  updateIssue();
+  issue.showModal();
+  byId('issue-title').focus();
+}
+
+function updateIssue() {
+  const device = user()?.devices.find(d => String(d.id) === issuedDevice?.id);
+  const message = byId('issue-status');
+  const { status, updated } = telemetryStatus();
+  const date = timestamp(device?.last_seen);
+  let text;
+  let observed = false;
+  if (!device) {
+    text = 'Профиль больше не доступен.';
+    byId('issue-json').hidden = true;
+    byId('issue-qr').hidden = true;
+  } else if (issuedDevice.rotated) {
+    text = 'Импортируйте новый профиль, чтобы снова подключиться.';
+  } else if (status === 'stale') {
+    text = `Статистика обновлялась ${timeFormat.format(updated)}.`;
+  } else if (status === 'unavailable') {
+    text = 'Статистика активности недоступна.';
+  } else if (date) {
+    text = 'Первый трафик подтверждён';
+    observed = true;
+    if (issuedDevice.waiting && !document.hidden) message.classList.add('first-traffic');
+    issuedDevice.waiting = false;
+  } else {
+    text = 'Ждём первый трафик после подключения.';
+    issuedDevice.waiting = true;
+  }
+  if (device) {
+    byId('issue-json').hidden = false;
+    byId('issue-qr').hidden = false;
+  }
+  message.classList.toggle('recent', observed);
+  if (message.textContent !== text) message.textContent = text;
+  displayTime(byId('issue-time'), observed ? date : null);
+}
+
+function showRouteCheck() {
+  const status = byId('diagnostics-status');
+  const checks = byId('diagnostics-checks');
+  checks.replaceChildren();
+  byId('check-route').disabled = routeCheckPending;
+  if (routeCheckPending) {
+    showError(status, 'Проверяем маршрут. Это может занять несколько секунд.');
+    return;
+  }
+  if (lastRouteError) {
+    showError(status, lastRouteError);
+    return;
+  }
+  if (!lastRouteCheck) {
+    showError(status, '');
+    return;
+  }
+  const date = timestamp(lastRouteCheck.checked_at);
+  const where = lastRouteCheck.vantage || 'Проверка с сервера';
+  showError(status, date ? `${where} · ${timeFormat.format(date)}` : where);
+  const labels = { pass: 'Работает', fail: 'Ошибка', skipped: 'Пропущено' };
+  for (const check of lastRouteCheck.checks) {
+    const entry = element('li');
+    const title = element('strong', null, check.label);
+    const outcome = element('span', 'check-status', labels[check.status] || 'Неизвестно');
+    outcome.dataset.status = check.status;
+    entry.append(title, outcome);
+    if (check.detail) entry.append(element('p', 'reading-time', check.detail));
+    checks.append(entry);
+  }
 }
 
 byId('retry').addEventListener('click', () => loadState());
@@ -359,6 +510,24 @@ byId('add').addEventListener('click', () => {
   openDialog(item ? 'create_device' : 'create_user', item);
 });
 byId('settings').addEventListener('click', () => openDialog('settings'));
+byId('check-route').addEventListener('click', async () => {
+  if (routeCheckPending) return;
+  routeCheckPending = true;
+  lastRouteError = '';
+  showRouteCheck();
+  try {
+    lastRouteCheck = await request('/api/diagnostics', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ csrf: state.csrf }),
+    });
+  } catch (error) {
+    lastRouteError = error.message;
+  } finally {
+    routeCheckPending = false;
+    showRouteCheck();
+  }
+});
 byId('refresh-stats').addEventListener('click', async event => {
   const refresh = event.currentTarget;
   refresh.disabled = true;
@@ -376,6 +545,11 @@ byId('dialog-form').addEventListener('submit', submitAction);
 byId('cancel').addEventListener('click', () => dialog.close());
 dialog.addEventListener('cancel', event => {
   if (busy) event.preventDefault();
+});
+byId('issue-close').addEventListener('click', () => issue.close());
+issue.addEventListener('close', () => {
+  issuedDevice = undefined;
+  heading.focus();
 });
 byId('replay').addEventListener('click', () => {
   dialog.close();

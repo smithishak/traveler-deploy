@@ -241,7 +241,13 @@ h1 {
 .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 12px; margin: 10px 0; }
 .facts dt { color: var(--muted); font-size: 12px; }
 .facts dd { margin: 0; font-size: 13px; font-weight: 730; overflow-wrap: anywhere; }
-.facts .recent { width: fit-content; padding-inline: 4px; margin-inline-start: -4px; background: #ffbaaf; }
+.recent { width: fit-content; padding-inline: 4px; margin-inline-start: -4px; background: #ffbaaf; }
+.reading-time { display: block; color: var(--muted); font-size: 12px; font-weight: 500; }
+.first-traffic { display: inline-block; animation: first-traffic .42s var(--ease); }
+@keyframes first-traffic {
+  from { transform: scale(1.16) rotate(-7deg); background-color: #d64133; }
+  to { transform: scale(1); background-color: #ffbaaf; }
+}
 .device .actions { flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
 .device-delete { border: 0; box-shadow: none; }
 .telemetry-note { margin: 0 0 8px; color: var(--muted); }
@@ -271,6 +277,27 @@ dialog p { overflow-wrap: anywhere; }
 .checkbox { display: flex; align-items: center; gap: 8px; min-height: 44px; }
 .checkbox input { accent-color: var(--red); width: 18px; height: 18px; }
 .dialog-actions { flex-wrap: wrap; justify-content: flex-end; margin-top: 18px; }
+.issue-label {
+  margin: 0 0 7px;
+  color: var(--red);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.issue-options { display: grid; gap: 10px; margin-top: 17px; }
+.issue-options > div { padding: 10px; border: 1px solid var(--rule); }
+.issue-options h3, #diagnostics h3 { margin: 0; font-size: 16px; }
+.issue-options p { margin: 4px 0 8px; color: var(--muted); }
+.issue-status { margin: 14px 0 2px; font-size: 14px; font-weight: 750; }
+#diagnostics { margin: 12px 0; padding-top: 12px; border-top: 1px solid var(--rule); }
+#check-route { margin-top: 8px; }
+.diagnostics-checks { margin: 0; padding: 0; list-style: none; }
+.diagnostics-checks li { padding: 8px 0; border-top: 1px solid var(--rule); }
+.diagnostics-checks li p { margin: 3px 0 0; }
+.check-status { display: inline-block; margin-left: 7px; color: var(--muted); font-size: 12px; }
+.check-status[data-status="fail"] { color: var(--red); }
+.check-status[data-status="pass"] { color: #286044; }
 
 .cover {
   position: fixed;
@@ -379,6 +406,7 @@ dialog p { overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   .user-letter { transition: none; }
   .device { animation: none; }
+  .first-traffic { animation: none; }
   .cover-playing .cover-print,
   .cover-playing .cover-hero,
   .cover-playing .cover-title { animation-duration: .72s; }

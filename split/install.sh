@@ -140,7 +140,9 @@ upgrade_panel() {
     local backup file candidate since dependency previous_panel=0 previous_traffic=0 changed_origin=0
     local files=(
         "$origin" "$binary" "$panel/panel.py" "$panel/panel_state.py" "$panel/panel_traffic.py"
+        "$panel/panel_probe.py" "$panel/panel_diagnostics.py"
         "$units/traveler-panel.service" "$units/traveler-panel-traffic.service"
+        /etc/traveler-panel/probe-egress-ip
         /var/lib/traveler-panel/state.json
     )
     [[ -x $binary && -s $origin && -s /etc/traveler-panel/profile.json ]] ||
@@ -172,7 +174,7 @@ upgrade_panel() {
             nice -n 10 bash build-traffic-sing-box.sh "$candidate"
         fi
     fi
-    python3 -m py_compile panel.py panel_state.py panel_traffic.py
+    python3 -m py_compile panel.py panel_state.py panel_traffic.py panel_probe.py panel_diagnostics.py
 
     install -d -m 700 /var/backups/traveler-panel
     backup=$(mktemp -d /var/backups/traveler-panel/upgrade.XXXXXXXX)
@@ -218,9 +220,12 @@ upgrade_panel() {
     "$candidate" check -c "$PWD/traffic-config.json"
 
     install -d -m 755 "$panel" "$panel/panel-ui"
-    install -m 644 panel.py panel_state.py panel_traffic.py "$panel/"
+    install -m 644 panel.py panel_state.py panel_traffic.py panel_probe.py panel_diagnostics.py "$panel/"
     install -m 644 panel-ui/* "$panel/panel-ui/"
     install -m 644 traveler-panel.service traveler-panel-traffic.service "$units/"
+    if [[ -f probe-egress-ip ]]; then
+        install -m 600 probe-egress-ip /etc/traveler-panel/probe-egress-ip
+    fi
     if [[ $candidate != "$binary" ]]; then
         changed_origin=1
         install -m 755 "$candidate" "$binary.next"

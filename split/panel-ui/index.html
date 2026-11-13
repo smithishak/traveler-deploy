@@ -23,6 +23,7 @@
         <h1 id="heading" tabindex="-1">Пользователи</h1>
         <button type="button" id="add" class="button button-primary">+ Пользователь</button>
       </div>
+      <p id="telemetry-note" class="telemetry-note" hidden></p>
       <div id="entries" class="entries"></div>
     </section>
   </main>
@@ -54,6 +55,12 @@
       </label>
       <p id="stats-health" role="status" hidden></p>
       <button type="button" class="back" id="refresh-stats" hidden>Обновить статистику</button>
+      <section id="diagnostics" aria-labelledby="diagnostics-title" hidden>
+        <h3 id="diagnostics-title">Маршрут Traveler</h3>
+        <button type="button" class="button" id="check-route">Проверить маршрут</button>
+        <p id="diagnostics-status" role="status" hidden></p>
+        <ul id="diagnostics-checks" class="diagnostics-checks"></ul>
+      </section>
       <button type="button" class="back" id="replay" hidden>Смотреть заставку ↗</button>
       <p id="dialog-error" class="alert" role="alert" hidden></p>
       <div class="actions dialog-actions">
@@ -61,6 +68,27 @@
         <button type="submit" id="submit" class="button button-primary">Сохранить</button>
       </div>
     </form>
+  </dialog>
+  <dialog id="issue" aria-labelledby="issue-title">
+    <p class="issue-label" id="issue-label"></p>
+    <h2 id="issue-title" tabindex="-1"></h2>
+    <div class="issue-options">
+      <div>
+        <h3>На этом устройстве</h3>
+        <p>Скачайте файл и импортируйте его в sing-box.</p>
+        <a class="button button-primary" id="issue-json">Скачать JSON</a>
+      </div>
+      <div>
+        <h3>На другом устройстве</h3>
+        <p>Откройте QR здесь и отсканируйте его через sing-box на другом устройстве.</p>
+        <a class="button" id="issue-qr">Показать QR</a>
+      </div>
+    </div>
+    <p id="issue-status" class="issue-status" role="status"></p>
+    <time id="issue-time" class="reading-time" hidden></time>
+    <div class="actions dialog-actions">
+      <button type="button" id="issue-close" class="button button-quiet">К устройствам</button>
+    </div>
   </dialog>
 </body>
 </html>

@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from split import panel_state as panel
@@ -51,13 +51,15 @@ class PanelStateTests(unittest.TestCase):
         self.apply.assert_not_called()
 
     def test_device_creation_enrolls_stats_and_user_removal_revokes_device(self):
-        state = self.store.action({'action': 'create_user', 'name': 'Мария'})
+        state, issued = self.store.action({'action': 'create_user', 'name': 'Мария'})
+        self.assertIsNone(issued)
         self.apply.assert_not_called()
         user_id = state['users'][-1]['id']
-        state = self.store.action({
+        state, issued = self.store.action({
             'action': 'create_device', 'user_id': user_id, 'name': 'Телефон', 'kind': 'phone',
         })
         device = state['users'][-1]['devices'][0]
+        self.assertEqual(issued, device['id'])
         config = panel.read_json(self.config)
         credentials = panel.trojan(config)['users']
         self.assertEqual(credentials[:-1], self.legacy_credentials)
@@ -77,6 +79,50 @@ class PanelStateTests(unittest.TestCase):
                 self.store.action({
                     'action': action, 'user_id': owner['id'], 'device_id': owner['devices'][0]['id'],
                 })
+        self.assertEqual(self.config.read_bytes(), self.original)
+        self.apply.assert_not_called()
+
+    def test_rotation_changes_only_password_and_returns_same_device(self):
+        _, _, state = self.store.load()
+        owner = state['users'][0]
+        device = owner['devices'][1]
+        result, issued = self.store.action({
+            'action': 'rotate_device', 'user_id': owner['id'], 'device_id': device['id'],
+        })
+        self.assertEqual(issued, device['id'])
+        self.assertEqual(result, state)
+        config = panel.read_json(self.config)
+        credentials = panel.trojan(config)['users']
+        self.assertEqual(credentials[0], self.legacy_credentials[0])
+        self.assertEqual(credentials[1]['name'], device['username'])
+        self.assertNotEqual(credentials[1]['password'], self.legacy_credentials[1]['password'])
+        self.assertEqual(config['experimental'], json.loads(self.original)['experimental'])
+        self.apply.assert_called_once()
+
+    def test_probe_is_preserved_in_origin_but_hidden_and_not_enrolled(self):
+        config = json.loads(self.original)
+        probe = {'name': 'test-hidden-probe', 'password': 'test-only-probe-password'}
+        panel.trojan(config)['users'].append(probe)
+        self.config.write_bytes(panel.json_bytes(config))
+        with patch.object(panel, 'is_probe', side_effect=lambda credential: credential == probe):
+            _, _, state = self.store.load()
+            self.assertEqual(len(state['users'][0]['devices']), 2)
+            self.store.action({
+                'action': 'create_device', 'user_id': panel.OWNER_ID, 'name': 'Новый', 'kind': 'phone',
+            })
+        config = panel.read_json(self.config)
+        self.assertIn(probe, panel.trojan(config)['users'])
+        self.assertNotIn(probe['name'], config['experimental']['v2ray_api']['stats']['users'])
+
+    def test_legacy_profile_cannot_be_rotated(self):
+        _, _, state = self.store.load()
+        owner = state['users'][0]
+        with self.assertRaises(panel.ActionError) as error:
+            self.store.action({
+                'action': 'rotate_device', 'user_id': owner['id'],
+                'device_id': owner['devices'][0]['id'],
+            })
+        self.assertEqual(error.exception.status, 409)
         self.assertEqual(self.config.read_bytes(), self.original)
         self.apply.assert_not_called()
 
@@ -125,7 +171,15 @@ class PanelStateTests(unittest.TestCase):
         self.assertEqual((unknown['upload'], unknown['download'], unknown['last_seen']), (None,) * 3)
         report['updated_at'] = (now - timedelta(minutes=10)).isoformat()
         path.write_bytes(panel.json_bytes(report))
-        self.assertFalse(panel.public_state(state, panel.read_telemetry(path))['telemetry'])
+        stale = panel.public_state(state, panel.read_telemetry(path))
+        self.assertFalse(stale['telemetry'])
+        self.assertEqual(stale['telemetry_updated_at'], report['updated_at'])
+        self.assertEqual(stale['users'], result['users'])
+        path.unlink()
+        unavailable = panel.public_state(state, panel.read_telemetry(path))
+        self.assertFalse(unavailable['telemetry'])
+        self.assertIsNone(unavailable['telemetry_updated_at'])
+        self.assertIsNone(unavailable['users'][0]['devices'][0]['upload'])
 
 
 if __name__ == '__main__':

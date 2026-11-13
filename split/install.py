@@ -22,7 +22,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parent
 EDGE_CA = '/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt'
 PANEL_FILES = (
-    'configure.py', 'panel.py', 'panel_state.py', 'panel_traffic.py',
+    'configure.py', 'panel.py', 'panel_state.py', 'panel_traffic.py', 'panel_probe.py', 'panel_diagnostics.py',
     'build-traffic-sing-box.sh', 'traveler-panel.service', 'traveler-panel-traffic.service',
     *(f'panel-ui/{name}' for name in (
         'index.html', 'style.css', 'app.js', 'cover.webp', 'hero.webp',
@@ -162,7 +162,7 @@ def deploy(options):
 
     print('1/4 Preparing the private origin', flush=True)
     install_on(options, options.origin, options.origin_port, 'origin-init',
-               ('configure.py', 'traveler-origin.service'), {})
+               ('configure.py', 'panel_probe.py', 'traveler-origin.service'), {})
     origin_key = remote(options, options.origin, options.origin_port,
                         'cat /var/lib/traveler-origin/.ssh/edge_ed25519.pub', capture=True)
     path = remote(options, options.origin, options.origin_port,
@@ -178,12 +178,14 @@ def deploy(options):
 
     print('2/4 Preparing the public HTTPS edge', flush=True)
     install_on(options, options.edge, options.edge_port, 'edge-install',
-               ('configure.py', '90-traveler-link.conf'),
+               ('configure.py', 'panel_probe.py', '90-traveler-link.conf'),
                {'settings.json': settings, 'origin.pub': origin_key}, site=options.site)
     ca = None if options.domain else fetch_edge_ca(options)
     known_name = options.edge if options.edge_port == 22 else f'[{options.edge}]:{options.edge_port}'
     credentials['edge.known_hosts'] = known_name.encode('ascii') + b' ' + edge_key
     credentials['settings.json'] = settings
+    if options.diagnostic_egress_ip:
+        credentials['probe-egress-ip'] = (options.diagnostic_egress_ip + '\n').encode('ascii')
     if ca:
         credentials['edge-ca.crt'] = ca
 
@@ -217,6 +219,9 @@ def main():
     install.add_argument('--edge', type=ipv4, required=True)
     install.add_argument('--edge-port', type=port_number, default=22)
     install.add_argument('--domain', type=domain_name)
+    for command in (install, upgrade):
+        command.add_argument('--diagnostic-egress-ip', type=ipv4,
+                             help='optionally verify VPN egress against this expected IPv4')
     install.add_argument('--site', action='store_true', help='serve the bundled Kinolitsa site')
     install.add_argument('--panel-key', type=Path, help='public desktop key (.pub)')
     install.add_argument('--iphone-key', type=Path, help='public iPhone key (.pub)')
@@ -228,7 +233,10 @@ def main():
         if options.command == 'install':
             deploy(options)
         elif options.command == 'upgrade-panel':
-            install_on(options, options.origin, options.origin_port, 'upgrade-panel', PANEL_FILES, {})
+            generated = {}
+            if options.diagnostic_egress_ip:
+                generated['probe-egress-ip'] = (options.diagnostic_egress_ip + '\n').encode('ascii')
+            install_on(options, options.origin, options.origin_port, 'upgrade-panel', PANEL_FILES, generated)
         elif options.command == 'add-key':
             install_on(options, options.origin, options.origin_port, f'add-{options.kind}-key', (),
                        {f'{options.kind}.pub': public_key(options.public_key)})
