@@ -119,8 +119,7 @@ def finish(settings):
     Path('traveler-edge-link.service').write_text(f'''[Unit]
 Description=Traveler reverse SSH link to HTTPS ingress
 After=network-online.target traveler-origin.service
-Wants=network-online.target
-Requires=traveler-origin.service
+Wants=network-online.target traveler-origin.service
 
 [Service]
 User=traveler-origin

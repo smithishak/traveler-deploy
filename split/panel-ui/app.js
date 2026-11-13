@@ -271,13 +271,20 @@ function showError(node, message) {
   node.hidden = !message;
 }
 
+class ConnectionError extends Error {}
+
 async function request(path, options = {}) {
-  const response = await fetch(path, { cache: 'no-store', ...options });
+  let response;
+  try {
+    response = await fetch(path, { cache: 'no-store', ...options });
+  } catch {
+    throw new ConnectionError('Нет связи с панелью. На iPhone отключите Traveler в sing-box и заново запустите правило Local Forwarding в Termius.');
+  }
   let result;
   try {
     result = await response.json();
   } catch {
-    throw new Error('Панель получила неожиданный ответ сервера.');
+    throw new ConnectionError('Панель получила неполный или неожиданный ответ сервера.');
   }
   if (!response.ok || result.error) {
     throw new Error(typeof result.error === 'string' ? result.error : 'Сервер не выполнил запрос.');
@@ -315,13 +322,15 @@ async function loadState(reportFailure = false) {
     byId('retry').hidden = true;
     if (initial && state.settings.intro && !initialUser) showCover();
   } catch (error) {
-    if (initial) {
-      byId('loading').hidden = true;
+    if (revision === requestedAt) {
       showError(byId('error'), error.message);
       byId('retry').hidden = false;
-    } else if (revision === requestedAt) {
-      pollFailed = true;
-      render();
+      if (initial) {
+        byId('loading').hidden = true;
+      } else {
+        pollFailed = true;
+        render();
+      }
     }
     if (reportFailure) throw error;
   } finally {
@@ -344,18 +353,23 @@ function openDialog(action, item, device) {
   byId('dialog-title').textContent = titles[action];
   byId('name-field').hidden = !create;
   byId('name-input').required = create;
+  byId('name-input').disabled = false;
   byId('name-input').value = '';
   byId('kind-field').hidden = action !== 'create_device';
+  byId('kind').disabled = false;
   byId('kind').value = 'phone';
   byId('intro-field').hidden = !settings;
+  byId('intro').disabled = false;
   byId('intro').checked = state.settings.intro;
   byId('replay').hidden = !settings;
   byId('stats-health').hidden = !settings;
   byId('refresh-stats').hidden = !settings;
   byId('diagnostics').hidden = !settings;
   if (settings) updateStatsHealth();
-  byId('submit').textContent = create ? 'Добавить' : settings ? 'Сохранить'
+  intent.submitLabel = create ? 'Добавить' : settings ? 'Сохранить'
     : action === 'rotate_device' ? 'Перевыпустить' : 'Удалить';
+  byId('submit').textContent = intent.submitLabel;
+  byId('submit').hidden = false;
   const note = action === 'delete_user'
     ? `Профили пользователя «${item.name}» потеряют доступ к Traveler.`
     : action === 'delete_device' ? `Профиль «${device.name}» потеряет доступ к Traveler.`
@@ -368,14 +382,78 @@ function openDialog(action, item, device) {
   else byId('cancel').focus();
 }
 
+function completeAction(action, issuedId) {
+  pollFailed = false;
+  showError(byId('error'), '');
+  byId('retry').hidden = true;
+  dialog.close();
+  if (selectedId !== null && !user()) navigate(null);
+  else {
+    render();
+    if (action === 'delete_device') heading.focus();
+  }
+  if (issuedId != null && ['create_device', 'rotate_device'].includes(action)) {
+    const nextDevice = user()?.devices.find(device => String(device.id) === String(issuedId));
+    if (nextDevice) showIssue(nextDevice, action === 'rotate_device');
+  }
+}
+
+async function checkActionOutcome() {
+  const { payload, knownIds } = intent.uncertain;
+  let result;
+  try {
+    result = await request('/api/state');
+  } catch (error) {
+    showError(byId('dialog-error'),
+      `Результат операции пока неизвестен. ${error.message} Затем нажмите «Проверить результат».`);
+    return;
+  }
+  state = result.state ?? result;
+  pollFailed = false;
+  showError(byId('error'), '');
+  byId('retry').hidden = true;
+  const item = state.users.find(user => user.id === payload.user_id);
+  const device = item?.devices.find(device => device.id === payload.device_id);
+  const match = entry => entry.name === payload.name && !knownIds.has(entry.id);
+  let created;
+  if (payload.action === 'create_device') {
+    created = item?.devices.find(device => match(device) && device.kind === payload.kind);
+  } else if (payload.action === 'create_user') {
+    created = state.users.find(match);
+  }
+  const completed = {
+    create_user: Boolean(created),
+    create_device: Boolean(created),
+    delete_device: !device,
+    delete_user: !item,
+    settings: state.settings.intro === payload.intro,
+  };
+  if (completed[payload.action]) {
+    completeAction(payload.action, created?.id);
+  } else if (payload.action === 'rotate_device') {
+    byId('submit').hidden = true;
+    showError(byId('dialog-error'),
+      'Связь восстановлена. Чтобы получить действующий профиль, закройте окно и скачайте JSON с карточки устройства.');
+    render();
+  } else {
+    intent.uncertain = undefined;
+    byId('submit').textContent = intent.submitLabel;
+    byId('name-input').disabled = false;
+    byId('kind').disabled = false;
+    byId('intro').disabled = false;
+    showError(byId('dialog-error'), 'Изменение не найдено на сервере. Проверьте данные и повторите действие.');
+    render();
+  }
+}
+
 async function submitAction(event) {
   event.preventDefault();
-  if (!intent || busy) return;
+  if (!intent || busy || byId('submit').hidden) return;
   const { action, item, device } = intent;
   const payload = { csrf: state.csrf, action };
   if (item) payload.user_id = item.id;
   if (device) payload.device_id = device.id;
-  if (action.startsWith('create_')) {
+  if (!intent.uncertain && action.startsWith('create_')) {
     payload.name = byId('name-input').value.trim();
     if (!payload.name) {
       showError(byId('dialog-error'), 'Введите название.');
@@ -390,23 +468,32 @@ async function submitAction(event) {
   byId('submit').disabled = true;
   byId('cancel').disabled = true;
   try {
-    const result = await request('/api/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    if (intent.uncertain) {
+      await checkActionOutcome();
+      return;
+    }
+    const entriesBefore = action === 'create_device' ? item.devices : state.users;
+    const knownIds = new Set(entriesBefore.map(entry => entry.id));
+    let result;
+    try {
+      result = await request('/api/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (error) {
+      if (!(error instanceof ConnectionError)) throw error;
+      intent.uncertain = { payload, knownIds };
+      byId('submit').textContent = 'Проверить результат';
+      byId('name-input').disabled = true;
+      byId('kind').disabled = true;
+      byId('intro').disabled = true;
+      showError(byId('dialog-error'), 'Проверяем результат операции…');
+      await checkActionOutcome();
+      return;
+    }
     state = result.state ?? result;
-    pollFailed = false;
-    dialog.close();
-    if (selectedId !== null && !user()) navigate(null);
-    else {
-      render();
-      if (action === 'delete_device') heading.focus();
-    }
-    if (result.created_device_id != null && ['create_device', 'rotate_device'].includes(action)) {
-      const nextDevice = user()?.devices.find(d => String(d.id) === String(result.created_device_id));
-      if (nextDevice) showIssue(nextDevice, action === 'rotate_device');
-    }
+    completeAction(action, result.created_device_id);
   } catch (error) {
     showError(byId('dialog-error'), error.message);
   } finally {

@@ -137,6 +137,7 @@ sys.exit(datetime.fromisoformat(data["updated_at"]).timestamp() < int(sys.argv[1
 upgrade_panel() {
     local origin=/etc/traveler-origin/config.json binary=/usr/local/bin/traveler-sing-box
     local panel=/opt/traveler-panel units=/etc/systemd/system
+    local link=$units/traveler-edge-link.service
     local backup file candidate since dependency previous_panel=0 previous_traffic=0 changed_origin=0
     local files=(
         "$origin" "$binary" "$panel/panel.py" "$panel/panel_state.py" "$panel/panel_traffic.py"
@@ -145,6 +146,7 @@ upgrade_panel() {
         /etc/traveler-panel/probe-egress-ip
         /var/lib/traveler-panel/state.json
     )
+    if [[ -f $link ]]; then files+=("$link"); fi
     [[ -x $binary && -s $origin && -s /etc/traveler-panel/profile.json ]] ||
         die 'The existing origin and panel profile template must be installed first.'
     systemctl is-active --quiet traveler-origin.service || die 'The origin is not active.'
@@ -223,6 +225,10 @@ upgrade_panel() {
     install -m 644 panel.py panel_state.py panel_traffic.py panel_probe.py panel_diagnostics.py "$panel/"
     install -m 644 panel-ui/* "$panel/panel-ui/"
     install -m 644 traveler-panel.service traveler-panel-traffic.service "$units/"
+    # Keep the reverse SSH connection running when a profile change restarts sing-box.
+    if [[ -f $link ]] && grep -Fxq 'Requires=traveler-origin.service' "$link"; then
+        sed -i 's/^Requires=traveler-origin\.service$/Wants=traveler-origin.service/' "$link"
+    fi
     if [[ -f probe-egress-ip ]]; then
         install -m 600 probe-egress-ip /etc/traveler-panel/probe-egress-ip
     fi

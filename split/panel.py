@@ -10,6 +10,7 @@ import secrets
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import zlib
@@ -341,6 +342,12 @@ class PanelServer(HTTPServer):
         connection, address = super().get_request()
         connection.settimeout(5)
         return connection, address
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            logging.info('Panel client disconnected before receiving its response')
+            return
+        super().handle_error(request, client_address)
 
 
 if __name__ == '__main__':
